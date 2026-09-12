@@ -63,14 +63,14 @@ class RouteHelperTests(unittest.TestCase):
             },
             https_start="3000",
             spacing="1",
-            backend="fedora44-ai-safrano9999-ucore",
+            backend="fedora45-ai-safrano9999-ucore",
             host="ucore.tailb13f39.ts.net",
             preferred_port="11000",
         )
         self.assertLess(rendered.index(":3000"), rendered.index(":3001"))
-        self.assertIn("3000 -> fedora44-ai-safrano9999-ucore:11000", rendered)
-        self.assertIn("3001 -> fedora44-ai-safrano9999-ucore:8642", rendered)
-        self.assertIn("3002 -> fedora44-ai-safrano9999-ucore:9090", rendered)
+        self.assertIn("3000 -> fedora45-ai-safrano9999-ucore:11000", rendered)
+        self.assertIn("3001 -> fedora45-ai-safrano9999-ucore:8642", rendered)
+        self.assertIn("3002 -> fedora45-ai-safrano9999-ucore:9090", rendered)
         self.assertNotIn("192.168.11.55", rendered)
         self.assertNotIn(":9999", rendered)
         self.assertNotIn(":20241", rendered)
@@ -97,7 +97,7 @@ class RouteHelperTests(unittest.TestCase):
                 {"http_services": []},
                 https_start="3000",
                 spacing="1",
-                backend="fedora44-ai-safrano9999-ucore",
+                backend="fedora45-ai-safrano9999-ucore",
                 host="192.168.11.55",
             )
         with self.assertRaises(ValueError):
@@ -120,7 +120,7 @@ class RouteHelperTests(unittest.TestCase):
             },
             https_start="3000",
             spacing="1",
-            backend="fedora44-ai-safrano9999-ucore",
+            backend="fedora45-ai-safrano9999-ucore",
             host="ucore.tailb13f39.ts.net",
         )
         self.assertNotIn(":4000", rendered)

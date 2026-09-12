@@ -83,7 +83,7 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         unit = (UNIT_DIR / "citadel.service").read_text(encoding="utf-8")
         self.assertIn("Requires=persistainer.service", unit)
         self.assertIn("After=network.target persistainer.service", unit)
-        self.assertIn("fedora44-wait-ready", unit)
+        self.assertIn("fedora45-wait-ready", unit)
 
     def test_webui_does_not_own_cloudflared_service(self) -> None:
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")

@@ -2,7 +2,7 @@
 Description=CITADEL initial scan
 Wants=network-online.target
 After=network-online.target
-After=persistainer.service fedora44-ai-init-hooks.service
+After=persistainer.service fedora45-ai-init-hooks.service
 After=bip39.service cloudflared.service cockpit.service
 After=tailscaled.service tailscale-up.service
 After=vditor-notes.service

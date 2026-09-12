@@ -346,7 +346,7 @@ named volume. Mount that volume read-only at `/etc/caddy/<instance>` in the
 central Caddy container and add one import to the main Caddyfile, for example:
 
 ```text
-import fedora44-ai-safrano9999-ucore/CADDYFILES/Caddyfile
+import fedora45-ai-safrano9999-ucore/CADDYFILES/Caddyfile
 ```
 
 The central Caddy Quadlet remains responsible for publishing the generated
