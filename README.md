@@ -463,3 +463,35 @@ extension can be tested, the result is `NOT_TESTED`, never a successful gate.
 The endpoint defaults to showing all enabled extensions; its `extensions`
 parameter restricts the selection. The CLI requires an explicit selection.
 
+### Standalone checker (also suitable for n8n SSH nodes)
+
+Download the standard-library-only checker from the Citadel instance being tested:
+
+```bash
+CITADEL_URL='https://your-container.your-tailnet.ts.net:10002'
+curl --fail --show-error --silent "$CITADEL_URL/healthz/check.py" \
+  --output citadel-health-check.py.new &&
+  mv citadel-health-check.py.new citadel-health-check.py
+python3 citadel-health-check.py --url "$CITADEL_URL" \
+  --extensions tailscale cloudflare
+```
+
+Only the supplied extensions are checked. Do not pass `localhost` from another
+machine: those addresses refer to the checker machine. The CLI first requires
+HTTP 200 from Citadel's dashboard, then reads its selected index entries and
+checks their URLs from the caller's network. It does not call `systemctl` on the
+caller, which would say nothing about Citadel inside a remote container.
+
+Tailscale requires HTTP 200. Cloudflare requires HTTP 200 **and an identifiable
+Cloudflare Access login form** on its HTTPS `*.cloudflareaccess.com` login route.
+An arbitrary successful page, a challenge page or a denial page is insufficient.
+No credentials are submitted and the application behind Access is **NOT_TESTED**.
+The checker never scans, logs in, retries, or exposes URL query tokens in results.
+
+Output is a single JSON object with `status`, `gates.citadel_self`,
+`gates.citadel_links`, `extensions`, `results`, and `last_index_at`.
+Exit code 0 means PASS, 1 means a failed/incomplete check, 2 means invalid CLI
+arguments. If Citadel itself is unreachable, extension checks remain NOT_TESTED.
+Default per-request socket timeout: 5 seconds, up to 8 concurrent route checks.
+A workflow should also set its overall command timeout. Download failure must
+stop the gate rather than executing an older cached checker.

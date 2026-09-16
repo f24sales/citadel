@@ -8,6 +8,11 @@ from unittest.mock import patch
 import webui
 from health import snapshot
 
+spec = importlib.util.spec_from_file_location("checker", Path(__file__).resolve().parents[1] / "functions/citadel-health-check.py")
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
+
+
 class HealthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -72,6 +77,46 @@ class HealthTests(unittest.TestCase):
             with self.assertRaises(webui.HTTPException) as error:
                 webui.health_json("../bad")
             self.assertEqual(error.exception.status_code, 400)
+        script = webui.health_checker()
+        self.assertTrue(Path(script.path).is_file())
+        paths = {route.path for route in webui.app.routes}
+        self.assertTrue({"/healthz", "/api/health", "/healthz/check.py"}.issubset(paths))
+
+    def test_cli_queries_only_selected_extensions(self):
+        data = snapshot(self.base, ["tailscale"])
+        with patch.object(checker, "fetch", side_effect=[(200, "https://citadel/", b"ok"), (200, "https://citadel/api/health", json.dumps(data).encode()), (200, "https://test.ts.net:8000", b"ok")]) as fetch:
+            result = checker.check("https://citadel", ["tailscale"])
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(fetch.call_count, 3)
+        self.assertIn("extensions=tailscale", fetch.call_args_list[1].args[0])
+
+    def test_self_failure_stops_without_retry(self):
+        with patch.object(checker, "fetch", return_value=(503, "https://citadel", b"bad")) as fetch:
+            result = checker.check("https://citadel", ["tailscale", "cloudflare"])
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertTrue(all(e["status"] == "NOT_TESTED" for e in result["extensions"]))
+
+    def test_cloudflare_login_is_enough(self):
+        body = b'<form action="/cdn-cgi/access/verify-code/example"><input type="email"></form>'
+        url = "https://team.cloudflareaccess.com/cdn-cgi/access/login/example?secret=hidden"
+        with patch.object(checker, "fetch", return_value=(200, url, body)) as fetch:
+            result = checker.probe("cloudflare", {"port": 8000, "url": "https://example/"}, 5)
+        self.assertEqual(result["status"], "PASS")
+        self.assertNotIn("hidden", json.dumps(result))
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_arbitrary_200_and_fake_cloudflare_do_not_pass(self):
+        for url, body in [("https://team.cloudflareaccess.com/cdn-cgi/access/login/a", b"error"), ("https://cloudflareaccess.com.evil.test/cdn-cgi/access/login/a", b'<form action="/cdn-cgi/access/verify-code/a"><input type="password"></form>')]:
+            with self.subTest(url=url), patch.object(checker, "fetch", return_value=(200, url, body)):
+                self.assertEqual(checker.probe("cloudflare", {"port": 8000, "url": "https://example"}, 5)["status"], "FAIL")
+
+    def test_unrequested_extension_is_rejected_before_probing(self):
+        data = snapshot(self.base, ["tailscale"])
+        with patch.object(checker, "fetch", side_effect=[(200, "https://citadel/", b"ok"), (200, "https://citadel/api/health", json.dumps(data).encode())]) as fetch:
+            result = checker.check("https://citadel", ["cloudflare"])
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(result["status"], "FAIL")
 
 
 if __name__ == "__main__":

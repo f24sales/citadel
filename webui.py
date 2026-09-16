@@ -159,6 +159,15 @@ def health_page(extensions: str = ""):
     )
 
 
+@app.get("/healthz/check.py")
+def health_checker():
+    return FileResponse(
+        core.BASE_DIR / "functions" / "citadel-health-check.py",
+        media_type="text/x-python", filename="citadel-health-check.py",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.put("/api/cloudflare/ports/{port}")
 async def update_cloudflare_port(port: int, request: Request):
     _require_edit_token(request, request.headers.get("X-Citadel-Token", ""))
