@@ -19,6 +19,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from python_header import get, get_port  # noqa: F401
 
 import core
+import health
 
 
 class EditTokenGuard:
@@ -135,6 +136,26 @@ def index():
     data["edit_token_required"] = bool(_configured_edit_token())
     return _jinja.get_template("index.html").render(
         data=data,
+    )
+
+
+def _health_data(extensions: str):
+    try:
+        selected = health.extensions_arg(extensions) if extensions.strip() else None
+        return health.snapshot(core.BASE_DIR, selected)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/health")
+def health_json(extensions: str = ""):
+    return _health_data(extensions)
+
+
+@app.get("/healthz", response_class=HTMLResponse)
+def health_page(extensions: str = ""):
+    return _jinja.get_template("health.html").render(
+        data=_health_data(extensions), selection=extensions,
     )
 
 
