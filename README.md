@@ -446,3 +446,20 @@ bash -n unroute.sh
 
 The release workflow builds `citadel-latest.zip`, writes its SHA-256 file, and
 publishes both only for a version tag.
+
+## Health: index view and external reachability
+
+`/healthz` is a separate page with ✅ / ❌ / ⏭️ indicators. The existing
+service overview is unchanged. `/api/health?extensions=tailscale,cloudflare`
+returns the same **index state** as JSON (`schema_version: 1`). Health only reads
+existing index files, provider routes and caches. It never starts a scan,
+executes a provider, changes routing, or writes to the index. `last_index_at`
+is read from the existing `last_scan.txt` timestamp; it is shown without claiming
+that old data describes the current deployment. No implicit age limit is applied.
+
+An extension absent or unconfigured in the index is `SKIP`. A configured but
+unavailable extension, failed provider or broken route/cache is `FAIL`. If no
+extension can be tested, the result is `NOT_TESTED`, never a successful gate.
+The endpoint defaults to showing all enabled extensions; its `extensions`
+parameter restricts the selection. The CLI requires an explicit selection.
+
