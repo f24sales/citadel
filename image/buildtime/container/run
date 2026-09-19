@@ -1,0 +1,11 @@
+#!/usr/bin/python3
+"""Exclude unavailable bare-metal installer helpers from the runtime plugin."""
+import os
+from pathlib import Path
+
+root = Path(os.environ["FEDORA_BUILDTIME_REPOSITORY_DIR"])
+for name in ("install.py", "provider_example"):
+    helper = root / name
+    if (helper.is_symlink() and helper.readlink() == Path("../SCRIPTS") / name
+            and not helper.exists()):
+        helper.unlink()
