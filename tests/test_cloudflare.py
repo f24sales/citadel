@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "functions" / "providers"))
 
 from cloudflare_policy import (  # noqa: E402
     cloudflare_rules,
+    default_subdomains,
     normalize_rule,
     resolve_hostname,
     write_cloudflare_rules,
@@ -67,6 +68,14 @@ class CloudflarePolicyTests(unittest.TestCase):
         self.assertEqual(normalize_rule({}, port=399)["subdomains"], ["399"])
         with self.assertRaises(ValueError):
             normalize_rule({"subdomains": "399,399"}, port=399)
+
+    def test_https_default_uses_www_instead_of_numeric_port(self) -> None:
+        self.assertEqual(default_subdomains(443), ["www"])
+        self.assertEqual(normalize_rule({}, port=443)["subdomains"], ["www"])
+        self.assertEqual(
+            normalize_rule({"subdomains": ["443"]}, port=443)["subdomains"],
+            ["www"],
+        )
 
     def test_strict_policy_rejects_invalid_whitelist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

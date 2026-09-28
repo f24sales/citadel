@@ -32,6 +32,15 @@ def resolve_hostname(port: int, value: str, base_domain: str, zone_domain: str) 
     return hostname
 
 
+def default_subdomains(port: int | str) -> list[str]:
+    """Return CITADEL's default Cloudflare label for a discovered port."""
+    try:
+        port_number = int(str(port))
+    except (TypeError, ValueError):
+        port_number = None
+    return ["www"] if port_number == 443 else [str(port)]
+
+
 def normalize_subdomains(values: Any, port: int | str | None = None) -> list[str]:
     if isinstance(values, list):
         raw_values = values
@@ -41,18 +50,25 @@ def normalize_subdomains(values: Any, port: int | str | None = None) -> list[str
         raw_values = [values]
 
     aliases: list[str] = []
+    port_number = None
+    try:
+        port_number = int(str(port)) if port is not None else None
+    except (TypeError, ValueError):
+        pass
     for raw_value in raw_values:
         for part in str(raw_value).split(","):
             item = part.strip().lower()
             if not item:
                 continue
             alias = normalize_hostname(item)
+            if port_number == 443 and alias == "443":
+                alias = "www"
             if alias in aliases:
                 raise ValueError(f"Subdomain or hostname is listed more than once: {alias}")
             aliases.append(alias)
 
     if not aliases and port is not None:
-        aliases.append(normalize_hostname(str(port)))
+        aliases.extend(default_subdomains(port))
 
     return aliases
 

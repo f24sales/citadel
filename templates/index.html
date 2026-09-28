@@ -273,6 +273,10 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
+function defaultCloudflareSubdomains(port) {
+  return Number(port) === 443 ? ['www'] : [String(port)];
+}
+
 function unique(values) {
   return Array.from(new Set(values));
 }
@@ -306,7 +310,7 @@ function initializeCloudflareEditors() {
     const whitelist = editor.querySelector('.cloudflare-whitelist');
     const emails = editor.querySelector('.cloudflare-emails');
     const add = editor.querySelector('.cloudflare-email-add');
-    subdomains.value = tile.dataset.cloudflareSubdomains || tile.dataset.port || '';
+    subdomains.value = tile.dataset.cloudflareSubdomains || defaultCloudflareSubdomains(tile.dataset.port).join(',') || '';
     whitelist.checked = tile.dataset.cloudflareWhitelist === '1';
     let values = [];
     try {
@@ -419,7 +423,7 @@ function currentCloudflareState() {
       .filter(Boolean));
     const subdomains = unique(splitCsv(editor.querySelector('.cloudflare-subdomains').value));
     rules[tile.dataset.port] = {
-      subdomains: subdomains.length ? subdomains : [tile.dataset.port],
+      subdomains: subdomains.length ? subdomains : defaultCloudflareSubdomains(tile.dataset.port),
       whitelist,
       emails: whitelist ? emails : [],
     };

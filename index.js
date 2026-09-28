@@ -50,6 +50,10 @@ function readString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function defaultCloudflareSubdomains(port) {
+  return Number(port) === 443 ? ["www"] : [String(port)];
+}
+
 function pluginConfig(ctx) {
   if (isRecord(ctx?.pluginConfig)) {
     return ctx.pluginConfig;
@@ -296,7 +300,7 @@ function cloudflareEditListReply(data) {
 function cloudflareRuleReply(data, service, status) {
   const port = service.port;
   const rule = service.cloudflare_rule ?? {
-    subdomains: [String(port)],
+    subdomains: defaultCloudflareSubdomains(port),
     whitelist: false,
     emails: [],
   };
@@ -411,7 +415,7 @@ async function handleCloudflareCommand(args, data, api) {
   }
   const port = service.port;
   const rule = {
-    subdomains: [...(service.cloudflare_rule?.subdomains ?? [String(port)])],
+    subdomains: [...(service.cloudflare_rule?.subdomains ?? defaultCloudflareSubdomains(port))],
     whitelist: Boolean(service.cloudflare_rule?.whitelist),
     emails: [...(service.cloudflare_rule?.emails ?? [])],
   };

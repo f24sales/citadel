@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from cloudflare_policy import (
     cloudflare_rules,
+    default_subdomains,
     normalize_emails,
     normalize_rule,
     read_policy,
@@ -115,7 +116,7 @@ def _cloudflare_assignment(port: str, subdomain: str) -> str:
 
 
 def _cloudflare_assignments(port: str, rule: dict) -> list[str]:
-    aliases = rule.get("subdomains") or [port]
+    aliases = rule.get("subdomains") or default_subdomains(port)
     return [_cloudflare_assignment(port, str(alias)) for alias in aliases]
 
 
@@ -403,7 +404,7 @@ def build_dashboard() -> dict:
         tile["display_name"] = f"⭐ {name} ⭐" if tile["featured"] else name
         tile["cloudflare_rule"] = cloudflare.get(
             route_port,
-            {"subdomains": [route_port], "whitelist": False, "emails": []},
+            {"subdomains": default_subdomains(route_port), "whitelist": False, "emails": []},
         )
         tile_urls: dict[str, str] = {}
         for pid in provider_order:
