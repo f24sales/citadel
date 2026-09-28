@@ -385,6 +385,10 @@ It preserves unrelated DNS records, Access resources, and Tunnel ingress
 rules. See [CITADEL_CLOUDFLARE.md](CITADEL_CLOUDFLARE.md) for the required API
 permissions and provider-specific setup.
 
+For port 443, the local Caddy site block must include both `<domain>:443` and
+`www.<domain>:443` when both hostname flags are enabled. Reload or restart Caddy
+after changing the site block; CITADEL manages the Cloudflare DNS and Tunnel routes.
+
 ## Operations
 
 Run or repeat discovery:
