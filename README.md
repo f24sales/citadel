@@ -173,6 +173,8 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_TS_DISCOVERY` | `0` | Show manually generated Tailnet discovery data in a separate view |
 | `CITADEL_CLOUDFLARE` | `1` | Enable Cloudflare reconciliation when all required values exist |
 | `CITADEL_CLOUDFLARE_DOMAIN` | empty | DNS suffix used for generated hostnames |
+| `CITADEL_CLOUDFLARE_WWW443` | `0` | Add `www.<domain>` for Cloudflare port 443 |
+| `CITADEL_CLOUDFLARE_DOMAIN443` | `0` | Add the bare domain for Cloudflare port 443 |
 | `CITADEL_CLOUDFLARE_ACCOUNT_ID` | empty | Existing Cloudflare account ID |
 | `CITADEL_CLOUDFLARE_ZONE_ID` | empty | Existing Cloudflare zone ID |
 | `CITADEL_CLOUDFLARE_TUNNEL_ID` | empty | Existing named Tunnel ID |

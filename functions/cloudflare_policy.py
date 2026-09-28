@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -22,11 +23,34 @@ def normalize_hostname(value: str) -> str:
     return hostname
 
 
+WWW443_SETTING = "CITADEL_CLOUDFLARE_WWW443"
+DOMAIN443_SETTING = "CITADEL_CLOUDFLARE_DOMAIN443"
+
+
+def _enabled(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configured_443_subdomains() -> list[str] | None:
+    settings = (WWW443_SETTING, DOMAIN443_SETTING)
+    if not any(setting in os.environ for setting in settings):
+        return None
+    aliases: list[str] = []
+    if _enabled(os.environ.get(WWW443_SETTING)):
+        aliases.append("www")
+    if _enabled(os.environ.get(DOMAIN443_SETTING)):
+        aliases.append("domain")
+    return aliases or ["443"]
+
+
 def resolve_hostname(port: int, value: str, base_domain: str, zone_domain: str) -> str:
     suffix = normalize_hostname(base_domain)
     zone = normalize_hostname(zone_domain)
     requested = value.strip()
-    hostname = normalize_hostname(requested if "." in requested else f"{requested or port}.{suffix}")
+    if requested.lower() in {"domain", "@"}:
+        hostname = suffix
+    else:
+        hostname = normalize_hostname(requested if "." in requested else f"{requested or port}.{suffix}")
     if hostname != zone and not hostname.endswith(f".{zone}"):
         raise ValueError(f"Hostname {hostname} is outside Cloudflare zone {zone}.")
     return hostname
@@ -38,7 +62,9 @@ def default_subdomains(port: int | str) -> list[str]:
         port_number = int(str(port))
     except (TypeError, ValueError):
         port_number = None
-    return ["www"] if port_number == 443 else [str(port)]
+    if port_number == 443:
+        return _configured_443_subdomains() or ["443"]
+    return [str(port)]
 
 
 def normalize_subdomains(values: Any, port: int | str | None = None) -> list[str]:
@@ -55,6 +81,10 @@ def normalize_subdomains(values: Any, port: int | str | None = None) -> list[str
         port_number = int(str(port)) if port is not None else None
     except (TypeError, ValueError):
         pass
+    if port_number == 443:
+        configured = _configured_443_subdomains()
+        if configured is not None:
+            return configured
     for raw_value in raw_values:
         for part in str(raw_value).split(","):
             item = part.strip().lower()

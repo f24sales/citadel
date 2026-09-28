@@ -51,7 +51,7 @@ function readString(value) {
 }
 
 function defaultCloudflareSubdomains(port) {
-  return Number(port) === 443 ? ["www"] : [String(port)];
+  return [String(port)];
 }
 
 function pluginConfig(ctx) {

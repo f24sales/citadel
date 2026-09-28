@@ -96,6 +96,13 @@ CITADEL_CLOUDFLARE=1
 #default-preset: insert later
 CITADEL_CLOUDFLARE_DOMAIN=
 
+# Port 443 hostname switches: www443 has priority in dashboard/provider links.
+# Set either or both to 1; with both 0, CITADEL uses the numeric 443 hostname.
+#default-preset: 0
+CITADEL_CLOUDFLARE_WWW443=0
+#default-preset: 0
+CITADEL_CLOUDFLARE_DOMAIN443=0
+
 #default-preset: insert later
 CITADEL_CLOUDFLARE_ACCOUNT_ID=
 #default-preset: insert later

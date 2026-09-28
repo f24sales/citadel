@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,13 +70,22 @@ class CloudflarePolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_rule({"subdomains": "399,399"}, port=399)
 
-    def test_https_default_uses_www_instead_of_numeric_port(self) -> None:
-        self.assertEqual(default_subdomains(443), ["www"])
-        self.assertEqual(normalize_rule({}, port=443)["subdomains"], ["www"])
-        self.assertEqual(
-            normalize_rule({"subdomains": ["443"]}, port=443)["subdomains"],
-            ["www"],
-        )
+    def test_https_hostname_switches_are_independent_and_generic(self) -> None:
+        settings = {
+            "CITADEL_CLOUDFLARE_WWW443": "1",
+            "CITADEL_CLOUDFLARE_DOMAIN443": "1",
+        }
+        with patch.dict(os.environ, settings):
+            self.assertEqual(default_subdomains(443), ["www", "domain"])
+            self.assertEqual(normalize_rule({"subdomains": ["443"]}, port=443)["subdomains"], ["www", "domain"])
+            self.assertEqual(
+                resolve_hostname(443, "domain", "f24-sales.com", "f24-sales.com"),
+                "f24-sales.com",
+            )
+        with patch.dict(os.environ, {"CITADEL_CLOUDFLARE_WWW443": "0", "CITADEL_CLOUDFLARE_DOMAIN443": "1"}):
+            self.assertEqual(default_subdomains(443), ["domain"])
+        with patch.dict(os.environ, {"CITADEL_CLOUDFLARE_WWW443": "0", "CITADEL_CLOUDFLARE_DOMAIN443": "0"}):
+            self.assertEqual(default_subdomains(443), ["443"])
 
     def test_strict_policy_rejects_invalid_whitelist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -501,6 +511,23 @@ class CloudflareProviderTests(unittest.TestCase):
             "record",
         )
         self.assertEqual(calls[-1][0], "PUT")
+
+    def test_dns_ignores_mail_records_when_creating_apex_cname(self) -> None:
+        api = CloudflareAPI("token")
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET":
+                return [
+                    {"id": "mx", "type": "MX", "content": "mail.example.net"},
+                    {"id": "txt", "type": "TXT", "content": "v=spf1"},
+                ]
+            return {"id": "created"}
+
+        api.request = request
+        self.assertEqual(api.ensure_tunnel_dns("zone", "example.net", "tunnel"), "created")
+        self.assertEqual(calls[-1][0], "POST")
 
     def test_delete_is_idempotent_for_missing_resource(self) -> None:
         api = CloudflareAPI("token")

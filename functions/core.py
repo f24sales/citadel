@@ -110,6 +110,8 @@ def _ts_discovery_hosts(payload: dict) -> list[dict]:
 def _cloudflare_assignment(port: str, subdomain: str) -> str:
     value = subdomain.strip().rstrip(".").lower()
     domain = os.environ.get("CITADEL_CLOUDFLARE_DOMAIN", "").strip().rstrip(".").lower()
+    if value in {"domain", "@"} and domain:
+        return domain
     if "." in value or not domain:
         return value or port
     return f"{value or port}.{domain}"

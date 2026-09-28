@@ -179,7 +179,27 @@ class CloudflareAPI:
             query={"name": name, "per_page": 100},
         )
         records = records if isinstance(records, list) else []
-        matching = next((item for item in records if isinstance(item, dict)), None)
+        matching = next(
+            (
+                item
+                for item in records
+                if isinstance(item, dict) and str(item.get("type") or "").upper() == "CNAME"
+            ),
+            None,
+        )
+        conflicting = next(
+            (
+                item
+                for item in records
+                if isinstance(item, dict)
+                and str(item.get("type") or "").upper() not in {"CNAME", "MX", "TXT"}
+            ),
+            None,
+        )
+        if conflicting:
+            raise CloudflareAPIError(
+                f"DNS record {name} exists and is not a CNAME"
+            )
         payload = {
             "type": "CNAME",
             "name": name,
