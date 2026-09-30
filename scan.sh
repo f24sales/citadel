@@ -110,6 +110,8 @@ CADDY_BACKEND="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
     'from python_header import get; print(get("CITADEL_CADDY_BACKEND", ""))')"
 CADDY_HOST="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
     'from python_header import get; print(get("CITADEL_CADDY_HOST", ""))')"
+CADDY_REAL_IP_PORTS="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
+    'from python_header import get; print(get("CITADEL_CADDY_REAL_IP_PORTS", ""))')"
 CITADEL_PORT_VALUE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
     'from python_header import get; print(get("CITADEL_WEBUI_PORT", "11000"))')"
 
@@ -965,6 +967,7 @@ python3 "$FUNCTIONS_DIR/caddy_export.py" \
     --spacing "$CADDY_RANGE" \
     --backend "$CADDY_BACKEND" \
     --host "$CADDY_HOST" \
+    --real-ip-ports "$CADDY_REAL_IP_PORTS" \
     --preferred-port "$CITADEL_PORT_VALUE"
 echo "Caddyfile written: $CADDY_OUTPUT_FILE"
 echo

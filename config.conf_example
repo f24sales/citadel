@@ -86,6 +86,11 @@ CITADEL_CADDY_RANGE=1
 CITADEL_CADDY_BACKEND=
 CITADEL_CADDY_HOST=
 
+# Optional comma-separated backend ports that need an X-Real-IP header.
+# Caddy overwrites it with the direct peer IP; NAT may hide the original client.
+# Example: 18789 for an OpenClaw gateway configured to trust this proxy.
+CITADEL_CADDY_REAL_IP_PORTS=
+
 #required: Enable Tailscale discovery (0/1)
 #default-preset: 0
 CITADEL_TS_DISCOVERY=0

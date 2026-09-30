@@ -44,6 +44,7 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
             "CITADEL_CADDY_RANGE",
             "CITADEL_CADDY_BACKEND",
             "CITADEL_CADDY_HOST",
+            "CITADEL_CADDY_REAL_IP_PORTS",
         ):
             self.assertIn(key, example)
             self.assertIn(key, scan_unit)

@@ -76,6 +76,42 @@ class RouteHelperTests(unittest.TestCase):
         self.assertNotIn(":20241", rendered)
         self.assertIn(":11040", rendered)
         self.assertIn("tls_insecure_skip_verify", rendered)
+        self.assertNotIn("X-Real-IP", rendered)
+
+    def test_caddy_real_ip_header_is_limited_to_selected_backend_ports(self) -> None:
+        rendered = render_caddyfile(
+            {"http_services": [
+                {"port": 8000, "scheme": "http"},
+                {"port": 8443, "scheme": "https"},
+                {"port": 18789, "scheme": "http"},
+            ]},
+            https_start="3000", spacing="1", backend="gateway",
+            host="node.example.ts.net", real_ip_ports="18789, 8443,18789",
+        )
+        self.assertIn("\treverse_proxy gateway:8000\n", rendered)
+        self.assertIn(
+            "\treverse_proxy gateway:18789 {\n"
+            "\t\theader_up X-Real-IP {remote_host}\n\t}",
+            rendered,
+        )
+        self.assertIn(
+            "\treverse_proxy https://gateway:8443 {\n"
+            "\t\theader_up X-Real-IP {remote_host}\n"
+            "\t\ttransport http {\n\t\t\ttls_insecure_skip_verify\n\t\t}\n\t}",
+            rendered,
+        )
+        self.assertEqual(rendered.count("header_up X-Real-IP"), 2)
+
+    def test_caddy_real_ip_ports_reject_invalid_values(self) -> None:
+        for value in ("0", "65536", "18789,", "18789,,8443", "*", "18789\n}"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "CITADEL_CADDY_REAL_IP_PORTS",
+            ):
+                render_caddyfile(
+                    {"http_services": []}, https_start="3000", spacing="1",
+                    backend="gateway", host="node.example.ts.net",
+                    real_ip_ports=value,
+                )
 
     def test_caddy_export_zero_is_disabled_and_invalid_inputs_fail(self) -> None:
         self.assertEqual(

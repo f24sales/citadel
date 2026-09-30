@@ -170,6 +170,7 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_CADDY_RANGE` | `1` | Increment between generated central-Caddy ports |
 | `CITADEL_CADDY_BACKEND` | empty | Container DNS name used as the reverse-proxy backend |
 | `CITADEL_CADDY_HOST` | empty | Central Tailscale hostname included beside localhost and `127.0.0.1` |
+| `CITADEL_CADDY_REAL_IP_PORTS` | empty | Comma-separated backend ports where Caddy overwrites `X-Real-IP` with its direct peer IP |
 | `CITADEL_TS_DISCOVERY` | `0` | Show manually generated Tailnet discovery data in a separate view |
 | `CITADEL_CLOUDFLARE` | `1` | Enable Cloudflare reconciliation when all required values exist |
 | `CITADEL_CLOUDFLARE_DOMAIN` | empty | DNS suffix used for generated hostnames |
@@ -342,6 +343,13 @@ placed first; the remaining services follow by internal port. Every frontend
 contains only the configured Tailscale hostname, `localhost`, and `127.0.0.1`.
 The generated routes never include `CITADEL_SUBNET_IP` and never open a port by
 themselves.
+
+Set `CITADEL_CADDY_REAL_IP_PORTS=18789` to emit
+`header_up X-Real-IP {remote_host}` only for that backend port. The value may
+contain multiple comma-separated backend ports and is empty by default.
+Caddy overwrites any client-supplied value. This reports the peer Caddy sees;
+NAT may hide the original visitor IP. The backend must explicitly trust Caddy
+and support this header (OpenClaw also requires `gateway.allowRealIpFallback`).
 
 With `CITADEL_PERSISTENT=1`, `CADDYFILES` is stored in the existing CITADEL
 named volume. Mount that volume read-only at `/etc/caddy/<instance>` in the

@@ -47,6 +47,7 @@ def render_caddyfile(
     backend: str,
     host: str,
     preferred_port: Any = 11000,
+    real_ip_ports: str = "",
 ) -> str:
     start = _port(https_start, "CITADEL_CADDY_HTTPS_START", disabled_allowed=True)
     if start == 0:
@@ -54,6 +55,10 @@ def render_caddyfile(
 
     step = _port(spacing, "CITADEL_CADDY_RANGE")
     preferred = _port(preferred_port, "CITADEL_WEBUI_PORT")
+    real_ip_backends = {
+        _port(value, "CITADEL_CADDY_REAL_IP_PORTS")
+        for value in real_ip_ports.split(",")
+    } if real_ip_ports.strip() else set()
     backend = str(backend).strip()
     host = str(host).strip().rstrip(".")
     if not _BACKEND_RE.fullmatch(backend):
@@ -118,16 +123,21 @@ def render_caddyfile(
                 f"https://127.0.0.1:{public_port} {{"
             ),
         ])
-        if scheme == "https":
-            lines.extend([
-                f"\treverse_proxy https://{backend}:{internal_port} {{",
-                "\t\ttransport http {",
-                "\t\t\ttls_insecure_skip_verify",
-                "\t\t}",
-                "\t}",
-            ])
+        real_ip = internal_port in real_ip_backends
+        target = f"{'https://' if scheme == 'https' else ''}{backend}:{internal_port}"
+        if scheme == "https" or real_ip:
+            lines.append(f"\treverse_proxy {target} {{")
+            if real_ip:
+                lines.append("\t\theader_up X-Real-IP {remote_host}")
+            if scheme == "https":
+                lines.extend([
+                    "\t\ttransport http {",
+                    "\t\t\ttls_insecure_skip_verify",
+                    "\t\t}",
+                ])
+            lines.append("\t}")
         else:
-            lines.append(f"\treverse_proxy {backend}:{internal_port}")
+            lines.append(f"\treverse_proxy {target}")
         lines.extend(["}", ""])
     return "\n".join(lines)
 
@@ -169,6 +179,7 @@ def main() -> int:
     parser.add_argument("--backend", default="")
     parser.add_argument("--host", default="")
     parser.add_argument("--preferred-port", default="11000")
+    parser.add_argument("--real-ip-ports", default="")
     args = parser.parse_args()
     with args.services.open(encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -179,6 +190,7 @@ def main() -> int:
         backend=args.backend,
         host=args.host,
         preferred_port=args.preferred_port,
+        real_ip_ports=args.real_ip_ports,
     )
     atomic_write(args.output, content)
     return 0
