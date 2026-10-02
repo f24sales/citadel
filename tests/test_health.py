@@ -64,9 +64,10 @@ class HealthTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             snapshot(self.base, ["../../other"])
 
-    def test_variant_routes_are_deduplicated(self):
-        self.write("extensions/enabled/tailscale/routes.json", {"considered": True, "available": True, "services": {"8000": {"url": "https://test.ts.net:8000"}}, "variants": {"https": {"considered": True, "services": {"8000": {"url": "https://test.ts.net:8000"}}}}})
-        self.assertEqual(len(snapshot(self.base)["extensions"][0]["services"]), 1)
+    def test_health_has_one_route_per_provider_and_port(self):
+        services = snapshot(self.base)["extensions"][0]["services"]
+        self.assertEqual(len(services), 1)
+        self.assertEqual(services[0]["provider"], "tailscale")
 
     def test_web_routes_and_html_escape(self):
         with patch.object(webui.core, "BASE_DIR", self.base):

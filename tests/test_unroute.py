@@ -3,396 +3,149 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
-import subprocess
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "functions"))
+spec = importlib.util.spec_from_file_location("citadel_unroute", ROOT / "functions/unroute_tailscale.py")
+unroute = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(unroute)
+from providers.tailscale import without_ports
 
 
-def load_unroute():
-    spec = importlib.util.spec_from_file_location(
-        "citadel_unroute",
-        ROOT / "functions" / "unroute_tailscale.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+def state(port=11000):
+    return {"services": {str(port): {
+        "mode": "proxy", "url": f"https://node.example.ts.net:{port}",
+        "target": f"http://127.0.0.1:{port}", "owns_listener": True,
+    }}, "available": True}
 
 
-unroute = load_unroute()
+def live_config(port=11000):
+    return {"TCP": {str(port): {"HTTPS": True}},
+            "Web": {f"node.example.ts.net:{port}": {
+                "Handlers": {"/": {"Proxy": f"http://127.0.0.1:{port}"}}}}}
 
 
-def route(logical: int, public: int, scheme: str) -> dict:
-    return {
-        "mode": "proxy",
-        "url": f"{scheme}://node.example.ts.net:{public}",
-        "target": f"http://127.0.0.1:{logical}",
-        "owns_listener": True,
-        "logical_port": logical,
-        "public_port": public,
-        "public_scheme": scheme,
-    }
+class UnrouteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.paths = [self.root / name for name in unroute.STATE_PATHS]
+        for path in self.paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state()))
+        (self.root / "config.conf").write_text("CITADEL_WEBUI_PORT=11000\n")
+        (self.root / "services.json").write_text(json.dumps({"http_services": [
+            {"port": 11000, "urls": {"tailscale": "https://node.example.ts.net:11000",
+                                    "localhost": "http://127.0.0.1:11000"}}]}))
+        (self.root / "cache").mkdir()
+        (self.root / "cache/11000.json").write_text(json.dumps({
+            "title": "Citadel", "tailscale_url": "https://node.example.ts.net:11000"}))
+        (self.root / "icons").mkdir()
+        (self.root / "icons/11000.svg").write_text("<svg/>")
+        self.removals = []
 
+    def run_unroute(self, live=None, ports=None, fail_ports=()):
+        self.live = copy.deepcopy(live if live is not None else live_config())
+        def remove(config, keys):
+            self.removals.append(keys)
+            if keys & {str(port) for port in fail_ports}:
+                raise ValueError("denied")
+            self.live = without_ports(config, keys)
+            return self.live
+        with (patch.object(unroute, "read_live_serve", side_effect=lambda: copy.deepcopy(self.live)),
+              patch.object(unroute, "remove_node_ports", side_effect=remove),
+              patch.object(unroute.shutil, "which", return_value="tailscale"),
+              patch.dict(os.environ, {"CITADEL_SCAN_LOCK_FILE": str(self.root / "scan.lock")})):
+            return unroute.unroute(self.root, ports)
 
-def state(logical: int = 11000) -> dict:
-    default = route(logical, logical, "http")
-    http = route(logical, 25000, "http")
-    https = route(logical, 35000, "https")
-    return {
-        "port_assignments": {
-            "http": {str(logical): 25000, "11999": 25100},
-            "https": {str(logical): 35000, "11999": 35100},
-        },
-        "allocation_policy": {
-            "starts": {"http": 25000, "https": 35000},
-            "last_nonblank": {"http": 25000, "https": 35000},
-            "range": 100,
-        },
-        "managed_ports": [str(logical), "25000", "35000"],
-        "managed_routes": {
-            str(logical): "http",
-            "25000": "http",
-            "35000": "https",
-        },
-        "serve_routes": {
-            str(logical): {**default, "variant": "default", "active": True},
-            "25000": {**http, "active": True},
-            "35000": {**https, "active": True},
-        },
-        "remembered_serve_routes": {
-            str(logical): {**default, "variant": "default", "active": True},
-            "25000": {**http, "active": True},
-            "35000": {**https, "active": True},
-        },
-        "variants": {
-            "default": {"available": True, "services": {str(logical): default}},
-            "http": {"available": True, "services": {str(logical): http}},
-            "https": {"available": True, "services": {str(logical): https}},
-        },
-        "remembered_variants": {
-            "default": {"available": True, "services": {str(logical): default}},
-            "http": {"available": True, "services": {str(logical): http}},
-            "https": {"available": True, "services": {str(logical): https}},
-        },
-        "services": {str(logical): default},
-        "remembered_services": {str(logical): default},
-        "service_signatures": {
-            f"default:{logical}": {},
-            f"http:{logical}": {},
-            f"https:{logical}": {},
-        },
-        "route_failures": {},
-        "fallbacks": {},
-    }
-
-
-def live_config(*entries: tuple[int, str, int]) -> dict:
-    tcp = {}
-    web = {}
-    for public, scheme, logical in entries:
-        tcp[str(public)] = {scheme.upper(): True}
-        web[f"node.example.ts.net:{public}"] = {
-            "Handlers": {"/": {"Proxy": f"http://127.0.0.1:{logical}"}}
-        }
-    return {"TCP": tcp, "Web": web}
-
-
-class ResolutionTests(unittest.TestCase):
-    def test_logical_port_selects_default_and_both_allocated_variants(self) -> None:
-        resolution = unroute.resolve_requested_port(state(), 11000)
-        self.assertEqual(resolution.kind, "logical")
-        self.assertEqual(
-            [
-                (item.variant, item.scheme, item.public_port)
-                for item in resolution.listeners
-            ],
-            [
-                ("default", "http", 11000),
-                ("http", "http", 25000),
-                ("https", "https", 35000),
-            ],
-        )
-
-    def test_public_port_selects_only_exact_variant(self) -> None:
-        resolution = unroute.resolve_requested_port(state(), 35000)
-        self.assertEqual(resolution.kind, "public")
-        self.assertEqual(
-            [
-                (item.variant, item.scheme, item.logical_port, item.public_port)
-                for item in resolution.listeners
-            ],
-            [("https", "https", 11000, 35000)],
-        )
-
-    def test_logical_public_collision_is_fail_closed(self) -> None:
-        payload = state()
-        payload["port_assignments"]["http"]["35000"] = 25001
-        with self.assertRaisesRegex(unroute.UnrouteError, "ambiguous"):
-            unroute.resolve_requested_port(payload, 35000)
-
-    def test_legacy_literal_listener_remains_supported(self) -> None:
-        payload = {
-            "managed_routes": {"11000": "https"},
-            "remembered_serve_routes": {
-                "11000": {
-                    "url": "https://node.example.ts.net:11000",
-                    "target": "http://127.0.0.1:11000",
-                }
-            },
-        }
-        resolution = unroute.resolve_requested_port(payload, 11000)
-        self.assertEqual(resolution.kind, "legacy")
-        self.assertEqual(resolution.listeners[0].public_port, 11000)
-        self.assertTrue(resolution.listeners[0].owned)
-
-
-class StatePruningTests(unittest.TestCase):
-    def test_prunes_one_public_variant_but_keeps_all_assignments(self) -> None:
-        payload = state()
-        original_assignments = copy.deepcopy(payload["port_assignments"])
-        selection = unroute.resolve_requested_port(payload, 35000).listeners[0]
-
-        self.assertTrue(unroute.prune_listener_state(payload, selection))
-
-        self.assertEqual(payload["port_assignments"], original_assignments)
-        self.assertEqual(
-            payload["managed_routes"],
-            {"11000": "http", "25000": "http"},
-        )
-        self.assertEqual(payload["managed_ports"], ["11000", "25000"])
-        self.assertNotIn("11000", payload["variants"]["https"]["services"])
-        self.assertIn("11000", payload["variants"]["default"]["services"])
-        self.assertIn("11000", payload["variants"]["http"]["services"])
-        self.assertEqual(
-            payload["services"]["11000"]["public_port"],
-            11000,
-        )
-
-    def test_logical_pruning_keeps_assignment_tombstones(self) -> None:
-        payload = state()
-        original_assignments = copy.deepcopy(payload["port_assignments"])
-        for selection in unroute.resolve_requested_port(payload, 11000).listeners:
-            unroute.prune_listener_state(payload, selection)
-
-        self.assertEqual(payload["port_assignments"], original_assignments)
-        self.assertEqual(payload["managed_routes"], {})
-        self.assertNotIn("11000", payload["services"])
-
-
-class UnrouteIntegrationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.base = Path(self.temporary.name)
-        (self.base / "extensions/enabled/tailscale").mkdir(parents=True)
-        (self.base / "cache").mkdir()
-        (self.base / "icons").mkdir()
-
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
-
-    def write_fixture(self) -> None:
-        payload = state()
-        for path in (
-            self.base / "tailscale.json",
-            self.base / "extensions/enabled/tailscale/routes.json",
-        ):
-            path.write_text(json.dumps(payload), encoding="utf-8")
-        (self.base / "services.json").write_text(
-            json.dumps({
-                "http_services": [{
-                    "port": 11000,
-                    "scheme": "http",
-                    "urls": {
-                        "localhost": "http://127.0.0.1:11000",
-                        "tailscale-default": "http://node.example.ts.net:11000",
-                        "tailscale-http": "http://node.example.ts.net:25000",
-                        "tailscale-https": "https://node.example.ts.net:35000",
-                        "tailscale": "http://node.example.ts.net:11000",
-                    },
-                }],
-                "other_ports": [{"port": 5432, "service": "postgresql"}],
-            }),
-            encoding="utf-8",
-        )
-        (self.base / "cache/11000.json").write_text(
-            json.dumps({
-                "title": "CITADEL",
-                "tailscale_default_url": "http://node.example.ts.net:11000",
-                "tailscale_http_url": "http://node.example.ts.net:25000",
-                "tailscale_https_url": "https://node.example.ts.net:35000",
-                "tailscale_url": "http://node.example.ts.net:11000",
-                "tailscale_path": None,
-            }),
-            encoding="utf-8",
-        )
-        (self.base / "icons/11000.png").write_bytes(b"icon")
-
-    @staticmethod
-    def runner(config: dict, commands: list[list[str]]):
-        def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            commands.append(command)
-            if command[-3:] == ["serve", "status", "--json"]:
-                return subprocess.CompletedProcess(
-                    command, 0, json.dumps(config), ""
-                )
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return run
-
-    def test_public_unroute_removes_only_exact_listener_and_preserves_files(self) -> None:
-        self.write_fixture()
-        commands: list[list[str]] = []
-        live = live_config(
-            (11000, "http", 11000),
-            (25000, "http", 11000),
-            (35000, "https", 11000),
-        )
-        with (
-            patch.object(unroute.shutil, "which", return_value="/usr/bin/tailscale"),
-            patch.object(unroute, "load_live_serve_config", return_value=live),
-            patch.object(unroute, "release_serve_port", side_effect=lambda binary, port, scheme: commands.append([binary, "serve", "--yes", f"--{scheme}={port}", "off"])),
-        ):
-            self.assertEqual(unroute.unroute(self.base, [35000]), 0)
-
-        mutations = [command for command in commands if command[-1] == "off"]
-        self.assertEqual(
-            mutations,
-            [["/usr/bin/tailscale", "serve", "--yes", "--https=35000", "off"]],
-        )
-        updated = json.loads((self.base / "tailscale.json").read_text())
-        self.assertEqual(updated["port_assignments"], state()["port_assignments"])
-        self.assertEqual(
-            updated["managed_routes"],
-            {"11000": "http", "25000": "http"},
-        )
-        services = json.loads((self.base / "services.json").read_text())
-        self.assertEqual(len(services["http_services"]), 1)
-        self.assertEqual(services["other_ports"][0]["port"], 5432)
-        self.assertNotIn("tailscale-https", services["http_services"][0]["urls"])
-        self.assertTrue((self.base / "cache/11000.json").exists())
-        self.assertTrue((self.base / "icons/11000.png").exists())
-        cache = json.loads((self.base / "cache/11000.json").read_text())
-        self.assertNotIn("tailscale_https_url", cache)
-        self.assertEqual(
-            cache["tailscale_url"], "http://node.example.ts.net:11000"
-        )
-
-    def test_foreign_listener_is_left_untouched_without_state_mutation(self) -> None:
-        self.write_fixture()
-        original = (self.base / "tailscale.json").read_text()
-        foreign = live_config((35000, "https", 9999))
-        commands: list[list[str]] = []
-        runner = self.runner(foreign, commands)
-        with (
-            patch.object(unroute.shutil, "which", return_value="/usr/bin/tailscale"),
-            patch.object(unroute, "load_live_serve_config", return_value=foreign),
-            patch.object(unroute, "release_serve_port") as release,
-            self.assertRaisesRegex(unroute.UnrouteError, "left untouched"),
-        ):
-            unroute.unroute(self.base, [35000])
-
-        release.assert_not_called()
-        self.assertEqual((self.base / "tailscale.json").read_text(), original)
-
-    def test_logical_unroute_releases_default_and_both_allocated_variants(self) -> None:
-        self.write_fixture()
-        commands: list[list[str]] = []
-        live = live_config(
-            (11000, "http", 11000),
-            (25000, "http", 11000),
-            (35000, "https", 11000),
-        )
-        with (
-            patch.object(unroute.shutil, "which", return_value="/usr/bin/tailscale"),
-            patch.object(unroute, "load_live_serve_config", return_value=live),
-            patch.object(unroute, "release_serve_port", side_effect=lambda binary, port, scheme: commands.append([binary, "serve", "--yes", f"--{scheme}={port}", "off"])),
-        ):
-            self.assertEqual(unroute.unroute(self.base, [11000]), 0)
-
-        mutations = [command for command in commands if command[-1] == "off"]
-        self.assertEqual(
-            mutations,
-            [
-                ["/usr/bin/tailscale", "serve", "--yes", "--http=11000", "off"],
-                ["/usr/bin/tailscale", "serve", "--yes", "--http=25000", "off"],
-                ["/usr/bin/tailscale", "serve", "--yes", "--https=35000", "off"],
-            ],
-        )
-        updated = json.loads((self.base / "tailscale.json").read_text())
-        self.assertEqual(updated["port_assignments"], state()["port_assignments"])
-        self.assertEqual(updated["managed_routes"], {})
-        self.assertTrue((self.base / "cache/11000.json").exists())
-        self.assertTrue((self.base / "icons/11000.png").exists())
-
-    def test_foreign_default_fails_closed_before_any_variant_is_removed(self) -> None:
-        self.write_fixture()
-        original = (self.base / "tailscale.json").read_text()
-        live = live_config(
-            (11000, "http", 9999),
-            (25000, "http", 11000),
-            (35000, "https", 11000),
-        )
-        with (
-            patch.object(unroute.shutil, "which", return_value="/usr/bin/tailscale"),
-            patch.object(unroute, "load_live_serve_config", return_value=live),
-            patch.object(unroute, "release_serve_port") as release,
-            self.assertRaisesRegex(unroute.UnrouteError, "left untouched"),
-        ):
-            unroute.unroute(self.base, [11000])
-
-        release.assert_not_called()
-        self.assertEqual((self.base / "tailscale.json").read_text(), original)
-
-    def test_direct_default_is_never_switched_off(self) -> None:
-        self.write_fixture()
-        for relative in (
-            Path("tailscale.json"),
-            Path("extensions/enabled/tailscale/routes.json"),
-        ):
-            path = self.base / relative
+    def test_release_preserves_discovery_other_urls_and_logos(self):
+        self.run_unroute()
+        self.assertEqual(self.removals, [{"11000"}])
+        for path in self.paths:
             payload = json.loads(path.read_text())
-            direct = {
-                **route(11000, 11000, "http"),
-                "mode": "direct",
-                "target": None,
-                "owns_listener": False,
-            }
-            payload["variants"]["default"]["services"]["11000"] = direct
-            payload["remembered_variants"]["default"]["services"]["11000"] = direct
-            payload["services"]["11000"] = direct
-            payload["remembered_services"]["11000"] = direct
-            payload["managed_ports"].remove("11000")
-            payload["managed_routes"].pop("11000")
-            payload["serve_routes"].pop("11000")
-            payload["remembered_serve_routes"].pop("11000")
-            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(payload["services"], {})
+            self.assertFalse(payload["available"])
+        row = json.loads((self.root / "services.json").read_text())["http_services"][0]
+        self.assertEqual(row["urls"], {"localhost": "http://127.0.0.1:11000"})
+        self.assertEqual(json.loads((self.root / "cache/11000.json").read_text()), {"title": "Citadel"})
+        self.assertEqual((self.root / "icons/11000.svg").read_text(), "<svg/>")
 
-        commands: list[list[str]] = []
-        live = live_config((25000, "http", 11000), (35000, "https", 11000))
-        with (
-            patch.object(unroute.shutil, "which", return_value="/usr/bin/tailscale"),
-            patch.object(unroute, "load_live_serve_config", return_value=live),
-            patch.object(unroute, "release_serve_port", side_effect=lambda binary, port, scheme: commands.append([binary, "serve", "--yes", f"--{scheme}={port}", "off"])),
-        ):
-            self.assertEqual(unroute.unroute(self.base, [11000]), 0)
+    def test_requested_port_is_removed_without_saved_state_or_ownership(self):
+        for path in self.paths:
+            path.unlink()
+        self.run_unroute()
+        self.assertEqual(self.removals, [{"11000"}])
+        self.assertEqual(unroute.node_ports(self.live), set())
 
-        self.assertEqual(
-            [command for command in commands if command[-1] == "off"],
-            [
-                ["/usr/bin/tailscale", "serve", "--yes", "--http=25000", "off"],
-                ["/usr/bin/tailscale", "serve", "--yes", "--https=35000", "off"],
-            ],
-        )
-        updated = json.loads((self.base / "tailscale.json").read_text())
-        self.assertEqual(updated["port_assignments"], state()["port_assignments"])
-        self.assertIn("11000", updated["variants"]["default"]["services"])
+    def test_changed_target_paths_funnel_tcp_foreground_are_all_removed(self):
+        for kind in ("target", "path", "funnel", "foreground", "tcp"):
+            with self.subTest(kind=kind):
+                live = live_config()
+                handlers = live["Web"]["node.example.ts.net:11000"]["Handlers"]
+                if kind == "target":
+                    handlers["/"]["Proxy"] = "http://127.0.0.1:9999"
+                elif kind == "path":
+                    handlers["/extra"] = {"Text": "old"}
+                elif kind == "funnel":
+                    live["AllowFunnel"] = {"node.example.ts.net:11000": True}
+                elif kind == "foreground":
+                    live = {"Foreground": {"session": live}}
+                else:
+                    live = {"TCP": {"11000": {"TCPForward": "127.0.0.1:22"}}}
+                self.run_unroute(live)
+                self.assertNotIn("11000", unroute.node_ports(self.live))
+
+    def test_unrequested_ports_are_preserved(self):
+        live = live_config()
+        other = live_config(5800)
+        live["TCP"].update(other["TCP"])
+        live["Web"].update(other["Web"])
+        self.run_unroute(live)
+        self.assertEqual(unroute.node_ports(self.live), {"5800"})
+
+    def test_missing_live_route_still_clears_stale_metadata(self):
+        self.run_unroute({})
+        self.assertEqual(self.removals, [])
+        self.assertEqual(json.loads(self.paths[0].read_text())["services"], {})
+
+    def test_partial_failure_only_prunes_successfully_released_ports(self):
+        live = live_config()
+        other = live_config(5800)
+        live["TCP"].update(other["TCP"])
+        live["Web"].update(other["Web"])
+        for path in self.paths:
+            payload = state()
+            payload["services"].update(state(5800)["services"])
+            path.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(unroute.UnrouteError, "denied"):
+            self.run_unroute(live, [11000, 5800], fail_ports={11000})
+        self.assertEqual(set(json.loads(self.paths[0].read_text())["services"]), {"11000"})
+
+    def test_corrupt_metadata_fails_before_removal(self):
+        self.paths[0].write_text("{broken")
+        with self.assertRaises(unroute.UnrouteError):
+            self.run_unroute()
+        self.assertEqual(self.removals, [])
+
+    def test_invalid_ports_fail_before_removal(self):
+        for port in (0, -1, 65536):
+            with self.subTest(port=port), self.assertRaises(unroute.UnrouteError):
+                self.run_unroute(ports=[port])
+        self.assertEqual(self.removals, [])
+
+    def test_scan_lock_prevents_concurrent_mutation(self):
+        with (self.root / "scan.lock").open("a") as lock:
+            unroute.fcntl.flock(lock, unroute.fcntl.LOCK_EX | unroute.fcntl.LOCK_NB)
+            with self.assertRaisesRegex(unroute.UnrouteError, "scan is running"):
+                self.run_unroute()
+        self.assertEqual(self.removals, [])
 
 
 if __name__ == "__main__":

@@ -13,7 +13,6 @@ from cloudflare_api import CloudflareAPI, CloudflareAPIError
 from common import (
     ROUTE_SCHEMA_VERSION,
     now_iso,
-    parse_bool,
     read_json,
     routable_services,
     route_record,
@@ -288,13 +287,15 @@ def main() -> int:
     parser.add_argument("--tailscale-file")
     args = parser.parse_args()
 
-    root = Path(args.provider_dir).resolve().parents[2]
+    provider_dir = Path(args.provider_dir).resolve()
+    root = provider_dir.parents[2]
     functions_dir = root / "functions"
     sys.path.insert(0, str(functions_dir))
     from cloudflare_policy import cloudflare_rules, resolve_hostname
 
     get = load_project_getter(root)
     ext_cfg = read_json(f"{args.provider_dir}/extension.json", {})
+    ext_cfg = ext_cfg if isinstance(ext_cfg, dict) else {}
     previous = read_json(args.routes_out, {})
     previous = previous if isinstance(previous, dict) else {}
     previous_hostnames = [
@@ -313,14 +314,16 @@ def main() -> int:
     services = read_json(args.services_file, {})
     services = services if isinstance(services, dict) else {}
 
-    enabled = parse_bool(get("CITADEL_CLOUDFLARE", "0"))
+    enabled = (
+        provider_dir.parent == root / "extensions" / "enabled"
+        and ext_cfg.get("enabled") is not False
+    )
     domain = get("CITADEL_CLOUDFLARE_DOMAIN", "").rstrip(".").lower()
     account_id = get("CITADEL_CLOUDFLARE_ACCOUNT_ID", "")
     zone_id = get("CITADEL_CLOUDFLARE_ZONE_ID", "")
     tunnel_id = get("CITADEL_CLOUDFLARE_TUNNEL_ID", "")
     origin_host = get("CITADEL_SUBNET_IP", "").strip() or "127.0.0.1"
-    token = get("CLOUDFLARE_API_TOKEN", "")
-    default_email = get("CLOUDFLARE_EMAIL", "")
+    token = get("CLOUDFLARE_API_TOKEN", "").strip()
     label = str(ext_cfg.get("label") or "Cloudflare")
     errors: list[str] = []
     routes: dict[str, dict[str, Any]] = {}
@@ -336,24 +339,19 @@ def main() -> int:
         "CITADEL_CLOUDFLARE_ACCOUNT_ID": account_id,
         "CITADEL_CLOUDFLARE_ZONE_ID": zone_id,
         "CITADEL_CLOUDFLARE_TUNNEL_ID": tunnel_id,
-        "CLOUDFLARE_API_TOKEN": token,
-        "CLOUDFLARE_EMAIL": default_email,
     }
     missing = [key for key, value in required.items() if not value]
-    api = CloudflareAPI(token) if token else None
-    if enabled and "CLOUDFLARE_EMAIL" in missing:
-        enabled = False
-        missing = [key for key in missing if key != "CLOUDFLARE_EMAIL"]
     try:
-        if enabled and missing:
-            raise CloudflareAPIError(f"Missing Cloudflare settings: {', '.join(missing)}")
-        if enabled and not re.fullmatch(r"[A-Za-z0-9._-]+", origin_host):
-            raise CloudflareAPIError("CITADEL_SUBNET_IP is invalid for Cloudflare origin")
-        if enabled and api:
+        if enabled and token:
+            api = CloudflareAPI(token)
             api.verify_token()
+            authenticated = True
+            if missing:
+                raise CloudflareAPIError(f"Missing Cloudflare settings: {', '.join(missing)}")
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", origin_host):
+                raise CloudflareAPIError("CITADEL_SUBNET_IP is invalid for Cloudflare origin")
             connections = api.tunnel_connections(account_id, tunnel_id)
             running = bool(connections)
-            authenticated = True
 
             zone = api.zone(zone_id)
             zone_domain = str(zone.get("name") or "").rstrip(".").lower()
@@ -368,16 +366,12 @@ def main() -> int:
             desired: dict[str, dict[str, Any]] = {}
             hostnames_seen: set[str] = set()
             all_services = routable_services(services)
-            all_services.extend(routable_services(services, "host_http_services"))
             for item in all_services:
                 if not isinstance(item, dict):
                     continue
-                is_host_service = item.get("origin") == "host"
-                port = int(item.get("route_port") or (0 if is_host_service else item.get("port") or 0))
+                port = int(item.get("port") or 0)
                 if not (1 <= port <= 65535):
                     continue
-                item_origin_host = str(item.get("origin_host") or origin_host)
-                item_origin_port = int(item.get("origin_port") or item.get("port") or port)
                 rule = policy.get(str(port), {"subdomains": [str(port)], "whitelist": False, "emails": []})
                 scheme = "https" if item.get("scheme") == "https" else "http"
                 for subdomain in rule["subdomains"]:
@@ -388,8 +382,8 @@ def main() -> int:
                     desired[hostname] = {
                         "port": port,
                         "scheme": scheme,
-                        "origin_host": item_origin_host,
-                        "origin_port": item_origin_port,
+                        "origin_host": origin_host,
+                        "origin_port": port,
                         "whitelist": bool(rule["whitelist"]),
                         "emails": list(rule["emails"]),
                     }
@@ -469,15 +463,13 @@ def main() -> int:
         access_policies = {**previous_access_policies, **access_policies}
 
     all_services = list(services.get("http_services", []))
-    all_services.extend(services.get("host_http_services", []))
     for item in all_services:
         if not isinstance(item, dict):
             continue
         urls = item.setdefault("urls", {})
         if isinstance(urls, dict):
             urls.pop("cloudflare", None)
-            is_host_service = item.get("origin") == "host"
-            port_key = str(item.get("route_port") or ("" if is_host_service else item.get("port") or ""))
+            port_key = str(item.get("port") or "")
             if port_key in routes:
                 urls["cloudflare"] = routes[port_key]["url"]
     write_json(args.services_file, services)

@@ -6,7 +6,6 @@ No Flask/HTTP dependencies. Returns plain dicts/lists.
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from cloudflare_policy import (
     cloudflare_rules,
@@ -20,9 +19,6 @@ from cloudflare_policy import (
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SERVICES_FILE = BASE_DIR / "services.json"
-HOST_SERVICES_FILE = BASE_DIR / "host_services.json"
-TS_DISCOVERY_FILE = BASE_DIR / "ts.json"
-TAILSCALE_FILE = BASE_DIR / "tailscale.json"
 LAST_SCAN_FILE = BASE_DIR / "last_scan.txt"
 EXTENSIONS_DIR = BASE_DIR / "extensions"
 ENABLED_EXT_DIR = EXTENSIONS_DIR / "enabled"
@@ -59,52 +55,9 @@ def _route_url(route: object) -> str:
     return url if isinstance(url, str) else ""
 
 
-def _enabled(value: object) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _configured_subnet_ip() -> str:
     value = os.environ.get("CITADEL_SUBNET_IP", "").strip()
     return "" if value.casefold() == "blank" else value
-
-
-def _safe_discovery_url(value: object) -> str:
-    url = str(value or "").strip()
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return ""
-    if parsed.scheme not in {
-        "http", "https", "ssh", "ftp", "mysql", "postgresql",
-        "redis", "smb", "tcp",
-    } or not parsed.hostname:
-        return ""
-    return url
-
-
-def _ts_discovery_hosts(payload: dict) -> list[dict]:
-    hosts: list[dict] = []
-    for raw_host in payload.get("hosts") or []:
-        if not isinstance(raw_host, dict):
-            continue
-        host = dict(raw_host)
-        services: list[dict] = []
-        for raw_service in raw_host.get("services") or []:
-            if not isinstance(raw_service, dict):
-                continue
-            try:
-                port = int(raw_service.get("port") or 0)
-            except (TypeError, ValueError):
-                continue
-            if not (1 <= port <= 65535):
-                continue
-            service = dict(raw_service)
-            service["port"] = port
-            service["url"] = _safe_discovery_url(service.get("url"))
-            services.append(service)
-        host["services"] = sorted(services, key=lambda item: item["port"])
-        hosts.append(host)
-    return hosts
 
 
 def _cloudflare_assignment(port: str, subdomain: str) -> str:
@@ -130,12 +83,17 @@ def _service_port(tile: dict) -> int:
 
 
 def _is_citadel_service(tile: dict) -> bool:
-    if tile.get("origin") == "host":
-        return False
-    configured = os.environ.get("CITADEL_WEBUI_PORT", "").strip()
+    if tile.get("citadel_webui") is True:
+        return True
+    configured_ports = {
+        int(value)
+        for key in ("CITADEL_WEBUI_PORT",)
+        if (value := os.environ.get(key, "").strip()).isdigit()
+        and 1 <= int(value) <= 65535
+    }
     port = _service_port(tile)
-    if configured.isdigit():
-        return port == int(configured)
+    if configured_ports:
+        return port in configured_ports
     name = str(tile.get("name") or tile.get("title") or "").strip().casefold()
     return name == "citadel"
 
@@ -155,8 +113,8 @@ def _cloudflare_default_emails() -> list[str]:
 
 def load_server_config() -> tuple[str, int]:
     """Read host/port from the already loaded environment."""
-    host = os.environ.get("FASTAPI_HOST") or "0.0.0.0"
-    port = int(os.environ.get("CITADEL_WEBUI_PORT", "800") or "800")
+    host = os.environ.get("FASTAPI_HOST") or "127.0.0.1"
+    port = int(os.environ.get("CITADEL_WEBUI_PORT", "11000") or "11000")
     if not (1 <= port <= 65535):
         raise ValueError("CITADEL_WEBUI_PORT must be 1-65535.")
 
@@ -207,70 +165,28 @@ def _load_providers() -> dict:
 
     for provider_dir in enabled_dirs:
         pid = provider_dir.name
+        ext = _read_json(provider_dir / "extension.json", {})
+        kind = ext.get("kind", "provider")
+        if kind == "export":
+            status = _read_json(provider_dir / "status.json", {})
+            for err in status.get("errors") or []:
+                if err:
+                    alerts.append(f"[{pid}] {err}")
+            if status.get("considered") and not status.get("available"):
+                alerts.append(f"[{pid}] Export beim letzten Scan nicht verfuegbar.")
+            continue
+        if kind != "provider":
+            alerts.append(f"[{pid}] Unknown extension kind: {kind!r}")
+            continue
         if pid == "subnet" and not _configured_subnet_ip():
             continue
 
-        ext = _read_json(provider_dir / "extension.json", {})
         routes = _read_json(_provider_routes_file(provider_dir), {})
 
         label = str(routes.get("label") or ext.get("label") or pid.capitalize())
 
         is_considered = bool(routes.get("considered", pid in considered))
         is_available = bool(routes.get("available", pid in available))
-
-        # Tailscale is reconciled once, but exposes independent Default, HTTP,
-        # and HTTPS Serve choices in the dashboard. There is deliberately no
-        # Direct provider: wildcard-bound services remain reachable without
-        # CITADEL managing or advertising that path.
-        variants = routes.get("variants") if pid == "tailscale" else None
-        if isinstance(variants, dict):
-            variant_seen = False
-            for scheme, default_label in (
-                ("default", "Tailscale Default"),
-                ("http", "Tailscale HTTP"),
-                ("https", "Tailscale HTTPS"),
-            ):
-                variant = variants.get(scheme)
-                if not isinstance(variant, dict):
-                    continue
-                variant_id = f"tailscale-{scheme}"
-                variant_label = str(variant.get("label") or default_label)
-                variant_services = variant.get("services")
-                if not isinstance(variant_services, dict):
-                    variant_services = {}
-                variant_considered = bool(
-                    variant.get("considered", bool(variant_services))
-                )
-                variant_available = bool(
-                    variant.get("available", bool(variant_services))
-                )
-                if variant_considered:
-                    provider_options[variant_id] = variant_label
-                    variant_seen = True
-                for port_str, route in variant_services.items():
-                    url = _route_url(route)
-                    if url:
-                        provider_urls_by_port.setdefault(variant_id, {})[
-                            str(port_str)
-                        ] = url
-                for err in variant.get("errors") or []:
-                    if err:
-                        alerts.append(f"[{variant_id}] {err}")
-                if variant_considered and not variant_available:
-                    alerts.append(
-                        f"[{variant_id}] beim letzten Scan beruecksichtigt, "
-                        "aber ohne aktive Routen."
-                    )
-
-            domain = str(routes.get("domain") or "")
-            if variant_seen and domain:
-                provider_header_meta.append(
-                    {"label": "Tailscale", "value": domain}
-                )
-            for err in routes.get("errors") or []:
-                if err:
-                    alerts.append(f"[tailscale] {err}")
-            continue
 
         # Header meta (IP / domain display)
         header_value = ""
@@ -318,7 +234,7 @@ def _load_providers() -> dict:
         "provider_urls_by_port": provider_urls_by_port,
         "provider_header_meta": provider_header_meta,
         "provider_order": list(provider_options.keys()),
-        "cloudflare_available": "cloudflare" in available,
+        "cloudflare_available": "cloudflare" in available and "cloudflare" in provider_options,
         "alerts": alerts,
     }
 
@@ -336,41 +252,13 @@ def build_dashboard() -> dict:
         "http_services": [],
         "other_ports": [],
     })
-    host_payload = _read_json(HOST_SERVICES_FILE, {})
     http_tiles = [
         dict(item)
         for item in services_payload.get("http_services") or []
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("hide_webui_http") is not True
     ]
-    host_http_tiles = [
-        dict(item)
-        for item in (
-            host_payload.get("host_http_services")
-            or services_payload.get("host_http_services")
-            or []
-        )
-        if isinstance(item, dict)
-    ]
-    http_tiles.extend(
-        item for item in host_http_tiles if int(item.get("route_port") or 0) > 0
-    )
     other_ports = services_payload.get("other_ports") or []
-    host_other_ports = (
-        host_payload.get("host_other_ports")
-        or services_payload.get("host_other_ports")
-        or []
-    )
-    host_listeners = host_http_tiles + [
-        dict(item) for item in host_other_ports if isinstance(item, dict)
-    ]
     cloudflare = cloudflare_rules(PORT_FILTER_FILE)
-    ts_discovery_enabled = _enabled(os.environ.get("CITADEL_TS_DISCOVERY"))
-    ts_payload = (
-        _read_json(TS_DISCOVERY_FILE, {"hosts": [], "errors": []})
-        if ts_discovery_enabled
-        else {"hosts": [], "errors": []}
-    )
-
     # UI config
     ui_cfg = _read_json(UI_CONFIG_FILE, {
         "default_provider": "localhost",
@@ -397,23 +285,19 @@ def build_dashboard() -> dict:
     # Build tile URL maps for template
     for tile in http_tiles:
         port = str(int(tile.get("port", 0)))
-        route_port = str(int(tile.get("route_port") or port))
-        tile["route_port"] = int(route_port)
-        tile["origin_port"] = int(tile.get("origin_port") or port)
-        tile["origin"] = str(tile.get("origin") or "localhost")
         name = str(tile.get("name") or tile.get("title") or f"Port {port}")
         tile["featured"] = _is_citadel_service(tile)
         tile["display_name"] = f"⭐ {name} ⭐" if tile["featured"] else name
         tile["cloudflare_rule"] = cloudflare.get(
-            route_port,
-            {"subdomains": default_subdomains(route_port), "whitelist": False, "emails": []},
+            port,
+            {"subdomains": default_subdomains(port), "whitelist": False, "emails": []},
         )
         tile_urls: dict[str, str] = {}
         for pid in provider_order:
             url = (
                 providers["provider_urls_by_port"]
                 .get(pid, {})
-                .get(route_port, "")
+                .get(port, "")
             )
             if not url:
                 url = (tile.get("urls") or {}).get(pid, "")
@@ -425,26 +309,11 @@ def build_dashboard() -> dict:
     return {
         "http_tiles": http_tiles,
         "other_ports": other_ports,
-        "host_listeners": sorted(
-            host_listeners,
-            key=lambda item: int(item.get("port") or 0),
-        ),
-        "deduplicated_ports": (
-            host_payload.get("deduplicated_ports")
-            or services_payload.get("deduplicated_ports")
-            or []
-        ),
         "alerts": providers["alerts"],
         "provider_options": providers["provider_options"],
         "provider_header_meta": providers["provider_header_meta"],
         "provider_order": provider_order,
         "cloudflare_available": providers["cloudflare_available"],
-        "ts_discovery_enabled": ts_discovery_enabled,
-        "ts_discovery_generated_at": ts_payload.get("generated_at"),
-        "ts_discovery_hosts": _ts_discovery_hosts(ts_payload),
-        "ts_discovery_errors": [
-            str(error) for error in ts_payload.get("errors") or [] if error
-        ],
         "default_mode": default_mode,
         "default_refresh": default_refresh,
         "last_scan": last_scan,
@@ -457,19 +326,13 @@ def save_cloudflare_rule(port: int, payload: dict) -> dict:
         raise ValueError("Port must be between 1 and 65535.")
 
     services = _read_json(SERVICES_FILE, {"http_services": []})
-    host_services = _read_json(HOST_SERVICES_FILE, {})
     known_services = list(services.get("http_services", []))
-    known_services.extend(
-        host_services.get("host_http_services")
-        or services.get("host_http_services", [])
-    )
     known_ports = {
-        int(item.get("route_port") or item.get("port", 0))
+        int(item.get("port", 0))
         for item in known_services
         if (
             isinstance(item, dict)
             and str(item.get("port", "")).isdigit()
-            and (item.get("origin") != "host" or item.get("route_port") is not None)
         )
     }
     if port not in known_ports:
@@ -494,19 +357,13 @@ def save_all_cloudflare_rules(payload: dict) -> dict[str, dict]:
         raise ValueError("Rules must be a JSON object keyed by port.")
 
     services = _read_json(SERVICES_FILE, {"http_services": []})
-    host_services = _read_json(HOST_SERVICES_FILE, {})
     known_services = list(services.get("http_services", []))
-    known_services.extend(
-        host_services.get("host_http_services")
-        or services.get("host_http_services", [])
-    )
     known_ports = {
-        str(int(item.get("route_port") or item.get("port", 0)))
+        str(int(item.get("port", 0)))
         for item in known_services
         if (
             isinstance(item, dict)
             and str(item.get("port", "")).isdigit()
-            and (item.get("origin") != "host" or item.get("route_port") is not None)
         )
     }
 

@@ -19,22 +19,18 @@ fi
 LOCAL_UNIT="$LOCAL_UNIT_DIR/$UNIT_NAME"
 USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 USER_UNIT="$USER_UNIT_DIR/$UNIT_NAME"
-PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
-CONFIG_FILE="$SCRIPT_DIR/config.conf"
-[ -f "$CONFIG_FILE" ] || CONFIG_FILE="$SCRIPT_DIR/config.conf_example"
-TRANSPORT="$(sed -n 's/^CITADEL_WEBUI_TRANSPORT=//p' "$CONFIG_FILE" | tail -n 1)"
-SOCKET="$(sed -n 's/^CITADEL_WEBUI_SOCKET=//p' "$CONFIG_FILE" | tail -n 1)"
-RUNTIME_DIRECTORY=""
+# Do not accidentally capture an activated virtual environment from PATH.
+PYTHON_BIN="$(command -v "${PYTHON_BIN:-/usr/bin/python3}")"
+# webui.py resolves TCP/Unix from the loaded configuration at each start, just
+# as it does outside systemd. Rendering needs no config parsing or socket setup.
+EXEC_START="$PYTHON_BIN -s $SCRIPT_DIR/webui.py"
 
-case "${TRANSPORT:-tcp}" in
-    tcp) EXEC_START="$PYTHON_BIN $SCRIPT_DIR/webui.py" ;;
-    unix)
-        case "$SOCKET" in /*|%t/*) ;; *) echo "Invalid CITADEL_WEBUI_SOCKET: $SOCKET" >&2; exit 1 ;; esac
-        EXEC_START="$PYTHON_BIN -m uvicorn webui:app --uds $SOCKET --proxy-headers --forwarded-allow-ips=*"
-        RUNTIME_DIRECTORY="RuntimeDirectory=citadel"
-        ;;
-    *) echo "Invalid CITADEL_WEBUI_TRANSPORT: $TRANSPORT" >&2; exit 1 ;;
-esac
+if ! "$RENDER_ONLY"; then
+    "$PYTHON_BIN" -s -c 'import dotenv, fastapi, jinja2, uvicorn' || {
+        echo "Install CITADEL's system Python dependencies before installing the service (see README)." >&2
+        exit 1
+    }
+fi
 
 mkdir -p "$LOCAL_UNIT_DIR"
 
@@ -47,7 +43,6 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
-$RUNTIME_DIRECTORY
 ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
@@ -63,7 +58,8 @@ echo "  Written: $LOCAL_UNIT"
 mkdir -p "$USER_UNIT_DIR"
 ln -sfn "$LOCAL_UNIT" "$USER_UNIT"
 systemctl --user daemon-reload
-systemctl --user enable --now "$UNIT_NAME"
+systemctl --user enable "$UNIT_NAME"
+systemctl --user restart "$UNIT_NAME"
 
 if command -v loginctl >/dev/null 2>&1 && [[ -n "${USER:-}" ]]; then
     if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != "yes" ]]; then

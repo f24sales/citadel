@@ -36,7 +36,6 @@ Preserve every unrelated DNS record, Access application, policy, and Tunnel ingr
 Store non-secret identifiers in `config.conf`:
 
 ```ini
-CITADEL_CLOUDFLARE=true
 CITADEL_CLOUDFLARE_DOMAIN=services.example.net
 CITADEL_CLOUDFLARE_ACCOUNT_ID=
 CITADEL_CLOUDFLARE_ZONE_ID=
@@ -52,5 +51,8 @@ Store secrets in `.env`:
 CLOUDFLARE_API_TOKEN=
 TUNNEL_TOKEN=
 ```
+
+Activation is controlled by the extension's enabled directory/manifest and
+the presence of `CLOUDFLARE_API_TOKEN`, not a separate environment toggle.
 
 `TUNNEL_TOKEN` belongs to the systemd-managed `cloudflared.service`. CITADEL reconciles routes but never starts, stops, installs, or otherwise owns the connector service.

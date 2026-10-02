@@ -1,2 +1,6 @@
+# Use the Containerfile CMD: /usr/bin/python3 -s webui.py.
+# The Python entrypoint selects TCP or Unix from runtime configuration.
+#container-command: image
+
 #required: CITADEL published web UI port
 CITADEL_WEBUI_PUBLISH_PORT=11000

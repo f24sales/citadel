@@ -39,7 +39,7 @@ def main() -> int:
             urls = {}
             svc["urls"] = urls
 
-        url = urls.get("localhost") or f"{scheme}://127.0.0.1:{port}"
+        url = f"{scheme}://127.0.0.1:{port}"
         urls["localhost"] = url
         routes[str(port)] = route_record("direct", url)
 

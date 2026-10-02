@@ -7,7 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, create_autospec, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,9 @@ from cloudflare import (  # noqa: E402
 from cloudflare_api import CloudflareAPI, CloudflareAPIError  # noqa: E402
 import core  # noqa: E402
 import cloudflare_defaults  # noqa: E402
+import cloudflare as cloudflare_provider  # noqa: E402
+import dispatch  # noqa: E402
+import health  # noqa: E402
 
 
 class CloudflarePolicyTests(unittest.TestCase):
@@ -181,7 +185,6 @@ class DashboardCoreTests(unittest.TestCase):
 
             original = {
                 "SERVICES_FILE": core.SERVICES_FILE,
-                "HOST_SERVICES_FILE": core.HOST_SERVICES_FILE,
                 "LAST_SCAN_FILE": core.LAST_SCAN_FILE,
                 "ENABLED_EXT_DIR": core.ENABLED_EXT_DIR,
                 "PROVIDERS_STATE_FILE": core.PROVIDERS_STATE_FILE,
@@ -191,7 +194,6 @@ class DashboardCoreTests(unittest.TestCase):
             old_port = os.environ.get("CITADEL_WEBUI_PORT")
             try:
                 core.SERVICES_FILE = base / "services.json"
-                core.HOST_SERVICES_FILE = base / "host_services.json"
                 core.LAST_SCAN_FILE = base / "last_scan.txt"
                 core.ENABLED_EXT_DIR = enabled
                 core.PROVIDERS_STATE_FILE = base / "extensions" / "providers_state.json"
@@ -211,7 +213,7 @@ class DashboardCoreTests(unittest.TestCase):
             self.assertTrue(dashboard["http_tiles"][0]["featured"])
             self.assertEqual(dashboard["http_tiles"][0]["display_name"], "⭐ CITADEL ⭐")
 
-    def test_separate_host_file_lists_unmapped_services_without_tiles(self) -> None:
+    def test_stale_host_discovery_is_not_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             (base / "services.json").write_text(
@@ -233,23 +235,18 @@ class DashboardCoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
             original_services = core.SERVICES_FILE
-            original_host_services = core.HOST_SERVICES_FILE
             original_enabled = core.ENABLED_EXT_DIR
             try:
                 core.SERVICES_FILE = base / "services.json"
-                core.HOST_SERVICES_FILE = base / "host_services.json"
                 core.ENABLED_EXT_DIR = base / "extensions" / "enabled"
                 dashboard = core.build_dashboard()
             finally:
                 core.SERVICES_FILE = original_services
-                core.HOST_SERVICES_FILE = original_host_services
                 core.ENABLED_EXT_DIR = original_enabled
 
             self.assertEqual([item["port"] for item in dashboard["http_tiles"]], [11000])
-            self.assertEqual(
-                [item["port"] for item in dashboard["host_listeners"]],
-                [5432, 8080],
-            )
+            self.assertNotIn("host_listeners", dashboard)
+            self.assertNotIn("deduplicated_ports", dashboard)
 
 
 class CloudflareDefaultsTests(unittest.TestCase):
@@ -327,6 +324,227 @@ class CloudflareDefaultsTests(unittest.TestCase):
             policy = json.loads((base / "ports.filter.json").read_text(encoding="utf-8"))
             self.assertNotIn("cloudflare_defaults", policy)
             self.assertEqual(policy["cloudflare"], {})
+
+
+class CloudflareActivationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(os.chdir, Path.cwd())
+        self.addCleanup(sys.path.__setitem__, slice(None), list(sys.path))
+        self.base = Path(temporary.name)
+        self.provider_dir = self.base / "extensions/enabled/cloudflare"
+        self.manifest()
+        self.write("services.json", {"http_services": [{"port": 8000, "scheme": "http"}]})
+        self.write("cache/8000.json", {"kind": "html"})
+        self.write("extensions/providers_state.json", {"providers": {"cloudflare": {"status": "ok"}}})
+        (self.base / "last_scan.txt").write_text("2026-10-02T12:00:00Z")
+        self.settings = {
+            "CLOUDFLARE_API_TOKEN": "unit-test-token",
+            "CITADEL_CLOUDFLARE_DOMAIN": "services.example.net",
+            "CITADEL_CLOUDFLARE_ACCOUNT_ID": "account",
+            "CITADEL_CLOUDFLARE_ZONE_ID": "zone",
+            "CITADEL_CLOUDFLARE_TUNNEL_ID": "tunnel",
+        }
+        self.getter = Mock(side_effect=lambda key, default="": self.settings.get(key, default))
+        self.api = create_autospec(CloudflareAPI, instance=True)
+        self.api.verify_token.return_value = None
+        self.api.tunnel_connections.return_value = [{"id": "connection"}]
+        self.api.zone.return_value = {"name": "example.net"}
+        self.api.tunnel_configuration.return_value = {"ingress": [{"service": "http_status:404"}]}
+        self.api.access_apps.return_value = []
+        self.api.access_policies.return_value = []
+        self.api.ensure_tunnel_dns.return_value = "dns-record"
+        factory = patch.object(cloudflare_provider, "CloudflareAPI", return_value=self.api)
+        self.factory = factory.start()
+        self.addCleanup(factory.stop)
+        for target in ("subprocess.run", "urllib.request.urlopen"):
+            guard = patch(target, side_effect=AssertionError("Live processes/network forbidden"))
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def write(self, name, payload):
+        path = self.base / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def manifest(self, enabled=True):
+        self.write("extensions/enabled/cloudflare/extension.json", {
+            "provider": "cloudflare", "label": "Cloudflare", "enabled": enabled,
+        })
+
+    def run_provider(self):
+        output = self.provider_dir / "routes.json"
+        with (patch.object(cloudflare_provider, "load_project_getter", return_value=self.getter),
+              patch.object(sys, "argv", ["cloudflare.py", "--provider-dir", str(self.provider_dir),
+                                         "--routes-out", str(output), "--services-file", str(self.base / "services.json")])):
+            code = cloudflare_provider.main()
+        return code, json.loads(output.read_text())
+
+    def ready(self):
+        with patch.dict(sys.modules, {
+            "python_header": SimpleNamespace(get=self.getter),
+            "cloudflare_api": SimpleNamespace(CloudflareAPI=self.factory),
+        }):
+            return cloudflare_defaults.cloudflare_ready(self.base)
+
+    def assert_no_remote_mutations(self):
+        mutations = [call for call in self.api.method_calls
+                     if call[0].startswith(("create_", "update_", "delete_", "ensure_"))]
+        self.assertEqual(mutations, [])
+
+    def test_valid_token_activates_without_legacy_toggle_or_global_email(self):
+        code, payload = self.run_provider()
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["considered"])
+        self.assertTrue(payload["available"])
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["errors"], [])
+        self.assertEqual(payload["services"]["8000"]["url"], "https://8000.services.example.net")
+        self.api.verify_token.assert_called_once_with()
+        self.api.tunnel_connections.assert_called_once_with("account", "tunnel")
+        self.api.zone.assert_called_once_with("zone")
+
+    def test_legacy_toggle_values_are_never_read_or_honored(self):
+        for value in ("0", "false", "1", "true", "invalid", ""):
+            with self.subTest(value=value):
+                self.settings["CITADEL_CLOUDFLARE"] = value
+                code, payload = self.run_provider()
+                self.assertEqual(code, 0)
+                self.assertTrue(payload["considered"])
+                self.assertTrue(self.ready()[0])
+        self.assertNotIn("CITADEL_CLOUDFLARE", [call.args[0] for call in self.getter.call_args_list])
+
+    def test_production_sources_no_longer_reference_activation_toggle(self):
+        for path in (Path(cloudflare_provider.__file__), Path(cloudflare_defaults.__file__)):
+            with self.subTest(path=path):
+                self.assertNotIn('"CITADEL_CLOUDFLARE"', path.read_text())
+                self.assertNotIn("'CITADEL_CLOUDFLARE'", path.read_text())
+
+    def test_missing_or_blank_token_skips_provider_and_defaults(self):
+        self.settings["CITADEL_CLOUDFLARE"] = "1"
+        for token in (None, "", " \t\n"):
+            with self.subTest(token=token):
+                if token is None:
+                    self.settings.pop("CLOUDFLARE_API_TOKEN", None)
+                else:
+                    self.settings["CLOUDFLARE_API_TOKEN"] = token
+                code, payload = self.run_provider()
+                self.assertEqual(code, 0)
+                self.assertFalse(payload["considered"])
+                self.assertFalse(payload["available"])
+                self.assertEqual(payload["errors"], [])
+                self.assertEqual(payload["services"], {})
+                self.assertEqual(health.snapshot(self.base, ["cloudflare"])["extensions"][0]["status"], "SKIP")
+                self.assertEqual(self.ready(), (False, "CLOUDFLARE_API_TOKEN is missing"))
+        self.factory.assert_not_called()
+
+    def test_invalid_token_fails_without_resource_changes(self):
+        self.api.verify_token.side_effect = CloudflareAPIError("invalid token")
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["considered"])
+        self.assertFalse(payload["authenticated"])
+        self.assertEqual(payload["errors"], ["invalid token"])
+        self.api.tunnel_connections.assert_not_called()
+        self.api.zone.assert_not_called()
+        self.assertEqual(self.ready(), (False, "invalid token"))
+        self.assert_no_remote_mutations()
+
+    def test_manifest_disabled_skips_even_with_token_and_old_toggle(self):
+        self.manifest(enabled=False)
+        self.settings["CITADEL_CLOUDFLARE"] = "1"
+        code, payload = self.run_provider()
+        self.assertEqual(code, 0)
+        self.assertFalse(payload["considered"])
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["errors"], [])
+        self.assertEqual(self.ready(), (False, "provider is disabled"))
+        self.assertEqual(health.snapshot(self.base, ["cloudflare"])["extensions"][0]["status"], "SKIP")
+        self.factory.assert_not_called()
+
+    def test_disabled_folder_skips_even_with_valid_token(self):
+        disabled = self.base / "extensions/disabled/cloudflare"
+        disabled.parent.mkdir()
+        self.provider_dir.rename(disabled)
+        self.provider_dir = disabled
+        code, payload = self.run_provider()
+        self.assertEqual(code, 0)
+        self.assertFalse(payload["considered"])
+        self.assertEqual(payload["errors"], [])
+        self.assertEqual(self.ready(), (False, "provider is disabled"))
+        self.assertEqual(health.snapshot(self.base, ["cloudflare"])["extensions"][0]["status"], "SKIP")
+        self.factory.assert_not_called()
+
+    def test_dispatch_does_not_execute_disabled_manifest(self):
+        self.manifest(enabled=False)
+        with (patch.object(sys, "argv", [
+                "dispatch.py", "--enabled-dir", str(self.base / "extensions/enabled"),
+                "--services-file", str(self.base / "services.json"), "--cache-dir", str(self.base / "cache"),
+                "--config-ini", str(self.base / "config.ini"),
+                "--state-file", str(self.base / "extensions/providers_state.json"),
+                "--tailscale-file", str(self.base / "tailscale.json"), "--provider", "cloudflare", "--strict",
+              ]), patch.object(dispatch.subprocess, "run") as run):
+            self.assertEqual(dispatch.main(), 0)
+        run.assert_not_called()
+        self.factory.assert_not_called()
+
+    def test_valid_token_is_considered_but_missing_required_settings_fail(self):
+        for key in ("CITADEL_CLOUDFLARE_DOMAIN", "CITADEL_CLOUDFLARE_ACCOUNT_ID",
+                    "CITADEL_CLOUDFLARE_ZONE_ID", "CITADEL_CLOUDFLARE_TUNNEL_ID"):
+            with self.subTest(key=key):
+                saved = self.settings.pop(key)
+                code, payload = self.run_provider()
+                self.settings[key] = saved
+                self.assertEqual(code, 1)
+                self.assertTrue(payload["considered"])
+                self.assertFalse(payload["available"])
+                self.assertIn(key, payload["errors"][0])
+        self.api.tunnel_connections.assert_not_called()
+        self.assert_no_remote_mutations()
+
+    def test_account_or_tunnel_failure_remains_error_after_token_verification(self):
+        self.api.tunnel_connections.side_effect = CloudflareAPIError("account/tunnel unavailable")
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertTrue(payload["considered"])
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["errors"], ["account/tunnel unavailable"])
+        self.api.zone.assert_not_called()
+        self.assert_no_remote_mutations()
+
+    def test_zone_domain_validation_precedes_any_resource_mutation(self):
+        for zone in ({}, {"name": "other.example.org"}):
+            with self.subTest(zone=zone):
+                self.api.zone.return_value = zone
+                code, payload = self.run_provider()
+                self.assertEqual(code, 1)
+                self.assertTrue(payload["considered"])
+                self.assertFalse(payload["available"])
+                self.assertTrue(payload["errors"])
+        self.api.tunnel_configuration.assert_not_called()
+        self.assert_no_remote_mutations()
+
+    def test_invalid_origin_or_whitelist_still_prevents_resource_mutations(self):
+        self.settings["CITADEL_SUBNET_IP"] = "invalid/origin"
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertTrue(payload["considered"])
+        self.assertIn("CITADEL_SUBNET_IP", payload["errors"][0])
+        self.settings.pop("CITADEL_SUBNET_IP")
+        self.write("ports.filter.json", {"cloudflare": {"8000": {"whitelist": True, "emails": []}}})
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertTrue(payload["considered"])
+        self.assertTrue(payload["errors"])
+        self.assert_no_remote_mutations()
+
+    def test_readiness_only_verifies_trimmed_token(self):
+        self.settings["CLOUDFLARE_API_TOKEN"] = "  unit-test-token  "
+        self.assertEqual(self.ready(), (True, "API token verified"))
+        self.factory.assert_called_once_with("unit-test-token")
+        self.api.verify_token.assert_called_once_with()
+        self.assertEqual([call[0] for call in self.api.method_calls], ["verify_token"])
 
 
 class CloudflareProviderTests(unittest.TestCase):
@@ -559,10 +777,8 @@ class CloudflareCoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
             old_services = core.SERVICES_FILE
-            old_host_services = core.HOST_SERVICES_FILE
             old_policy = core.PORT_FILTER_FILE
             core.SERVICES_FILE = services
-            core.HOST_SERVICES_FILE = base / "host_services.json"
             core.PORT_FILTER_FILE = policy
             try:
                 saved = core.save_all_cloudflare_rules(
@@ -600,7 +816,6 @@ class CloudflareCoreTests(unittest.TestCase):
                 self.assertEqual(cloudflare_rules(policy), saved)
             finally:
                 core.SERVICES_FILE = old_services
-                core.HOST_SERVICES_FILE = old_host_services
                 core.PORT_FILTER_FILE = old_policy
 
 

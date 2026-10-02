@@ -24,9 +24,6 @@
     {% endif %}
 
     <div class="header-controls">
-        {% if data.ts_discovery_enabled %}
-        <button id="ts-discovery-toggle" class="btn-default" type="button">TAILSCALE</button>
-        {% endif %}
         <label class="control" for="route-mode-sel">
             <span>Provider</span>
             <select id="route-mode-sel" {{ '' if data.provider_options else 'disabled' }}>
@@ -69,11 +66,10 @@
     <section class="grid" id="services-grid">
         {% for svc in data.http_tiles %}
         {% set port = svc.port|string %}
-        {% set route_port = svc.route_port|default(svc.port)|string %}
+        {% set port = svc.port|string %}
         {% set scheme = svc.scheme|default('http') %}
         <article class="tile" tabindex="0"
-            data-port="{{ route_port|e }}"
-            data-origin="{{ svc.origin|default('localhost')|e }}"
+            data-port="{{ port|e }}"
             data-cloudflare-subdomains="{{ svc.cloudflare_rule.subdomains|join(',')|e }}"
             data-cloudflare-whitelist="{{ '1' if svc.cloudflare_rule.whitelist else '0' }}"
             data-cloudflare-emails="{{ svc.cloudflare_rule.emails|tojson|e }}"
@@ -89,10 +85,7 @@
 
             <span class="tile-name">{{ svc.display_name|default(svc.name|default('Port ' ~ port))|e }}</span>
             <span class="tile-port">
-                {{ '🔒 ' if scheme == 'https' else '' }}:{{ svc.origin_port|default(svc.port)|int }}
-                {% if svc.origin|default('localhost') == 'host' and svc.route_port|default(0)|int != svc.origin_port|default(svc.port)|int %}
-                → :{{ svc.route_port|int }}
-                {% endif %}
+                {{ '🔒 ' if scheme == 'https' else '' }}:{{ svc.port|int }}
             </span>
             <span class="tile-url">-</span>
             <div class="cloudflare-editor" hidden>
@@ -112,47 +105,8 @@
     </section>
     {% endif %}
 
-    {% if data.deduplicated_ports %}
-    <div class="section-title">Redefined duplicated ports</div>
-    <section class="other-wrap">
-        <table class="other-table">
-            <thead><tr><th>Origin</th><th>Original port</th><th>Tailscale / Cloudflare port</th></tr></thead>
-            <tbody>
-                {% for item in data.deduplicated_ports %}
-                <tr>
-                    <td>{{ item.origin|e }}</td>
-                    <td>:{{ item.origin_port|int }}</td>
-                    <td>:{{ item.route_port|int }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </section>
-    {% endif %}
-
-    {% if data.host_listeners %}
-    <div class="section-title">Other Listening Ports — Host (host.containers.internal)</div>
-    <section class="other-wrap">
-        <table class="other-table">
-            <thead>
-                <tr><th>Port</th><th>Service</th><th>Address</th><th>Process</th></tr>
-            </thead>
-            <tbody>
-                {% for p in data.host_listeners %}
-                <tr>
-                    <td>:{{ p.port|default(0)|int }}</td>
-                    <td>{{ p.service|default(p.title|default('—'), true)|e }}</td>
-                    <td>host.containers.internal</td>
-                    <td>{{ p.process|default('—', true)|e }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </section>
-    {% endif %}
-
     {% if data.other_ports %}
-    <div class="section-title">{{ 'Other Listening Ports — Localhost' if data.host_listeners else 'Other Listening Ports' }}</div>
+    <div class="section-title">Other Listening Ports</div>
     <section class="other-wrap">
         <table class="other-table">
             <thead>
@@ -178,77 +132,11 @@
     {% endif %}
     </div>
 
-    {% if data.ts_discovery_enabled %}
-    <section id="ts-discovery-panel" class="ts-discovery" hidden>
-        <div class="ts-stars" aria-hidden="true"></div>
-        <header class="ts-discovery-header">
-            <div>
-                <span class="ts-eyebrow">TAILNET</span>
-                <h2>Tailscale Discovery</h2>
-            </div>
-            {% if data.ts_discovery_generated_at %}
-            <span class="ts-scanned-at">scanned {{ data.ts_discovery_generated_at|e }}</span>
-            {% endif %}
-        </header>
-
-        {% for error in data.ts_discovery_errors %}
-        <div class="ts-error">{{ error|e }}</div>
-        {% endfor %}
-
-        {% if data.ts_discovery_hosts %}
-        <div class="ts-hosts">
-            {% for host in data.ts_discovery_hosts %}
-            <article class="ts-host">
-                <header class="ts-host-header">
-                    <span class="ts-host-star">✦</span>
-                    <div>
-                        <h3>{{ host.name|default(host.dns_name|default(host.ip))|e }}</h3>
-                        <p>
-                            {{ host.dns_name|default('', true)|e }}
-                            {% if host.dns_name %} · {% endif %}
-                            {{ host.ip|default('—')|e }}
-                            {% if host.os %} · {{ host.os|e }}{% endif %}
-                        </p>
-                    </div>
-                    <span class="ts-service-count">{{ host.services|default([])|length }} services</span>
-                </header>
-                {% if host.services %}
-                <div class="ts-service-list">
-                    {% for service in host.services %}
-                    {% if service.url %}<a class="ts-service" href="{{ service.url|e }}" target="_blank" rel="noopener">
-                    {% else %}<div class="ts-service">{% endif %}
-                        <span class="ts-service-icon" aria-hidden="true">{{ service.icon|default('✦')|e }}</span>
-                        <span class="ts-service-port">:{{ service.port|int }}</span>
-                        <span class="ts-service-name">{{ service.service|default('unknown')|e }}</span>
-                        <span class="ts-service-detail">
-                            {{ service.product|default('', true)|e }}
-                            {% if service.version %} {{ service.version|e }}{% endif %}
-                        </span>
-                        {% if service.web %}<span class="ts-web-badge">{{ service.scheme|upper|e }}</span>{% endif %}
-                    {% if service.url %}</a>{% else %}</div>{% endif %}
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p class="ts-empty-host">No open TCP services found.</p>
-                {% endif %}
-            </article>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="ts-empty">
-            No discovery data yet. Run <code>./Scan_TS.sh</code> manually.
-        </div>
-        {% endif %}
-    </section>
-    {% endif %}
 </main>
 
 
 <script>
 const modeSel = document.getElementById('route-mode-sel');
-const tsDiscoveryToggle = document.getElementById('ts-discovery-toggle');
-const standardDashboard = document.getElementById('standard-dashboard');
-const tsDiscoveryPanel = document.getElementById('ts-discovery-panel');
 const saveDefaultBtn = document.getElementById('save-default-btn');
 const pageRefreshBtn = document.getElementById('page-refresh-btn');
 const cloudflareTokenControl = document.getElementById('cloudflare-token-control');
@@ -264,7 +152,6 @@ const routeDefaultKey = 'citadel-route-default';
 let cloudflareEditing = false;
 let cloudflareInitialState = '';
 let cloudflareDirty = false;
-let tsDiscoveryVisible = false;
 
 function splitCsv(value) {
   return String(value || '')
@@ -366,8 +253,6 @@ function applyMode(mode) {
 
   tiles.forEach(tile => {
     const choice = chooseTileUrl(tile, mode);
-    const hostService = tile.dataset.origin === 'host';
-    tile.hidden = hostService && (mode === 'localhost' || mode === 'subnet' || !choice);
 
     tile.dataset.activeUrl = choice;
     tile.classList.toggle('no-link', !choice);
@@ -503,23 +388,6 @@ tiles.forEach(tile => {
 
 if (pageRefreshBtn) {
   pageRefreshBtn.addEventListener('click', () => location.reload());
-}
-
-if (tsDiscoveryToggle && tsDiscoveryPanel && standardDashboard) {
-  tsDiscoveryToggle.addEventListener('click', () => {
-    tsDiscoveryVisible = !tsDiscoveryVisible;
-    standardDashboard.hidden = tsDiscoveryVisible;
-    tsDiscoveryPanel.hidden = !tsDiscoveryVisible;
-    document.body.classList.toggle('ts-discovery-mode', tsDiscoveryVisible);
-    tsDiscoveryToggle.textContent = tsDiscoveryVisible ? '← BACK' : 'TAILSCALE';
-    if (modeSel) modeSel.disabled = tsDiscoveryVisible || cloudflareEditing;
-    if (cloudflareTokenControl) cloudflareTokenControl.hidden = true;
-    if (cloudflareEditBtn) {
-      cloudflareEditBtn.hidden = tsDiscoveryVisible || modeSel?.value !== 'cloudflare';
-    }
-    if (cloudflareSaveBtn) cloudflareSaveBtn.hidden = true;
-    if (!tsDiscoveryVisible) applyMode(modeSel ? modeSel.value : defaultMode);
-  });
 }
 
 async function authorizeCloudflareEdit() {

@@ -1,0 +1,39 @@
+# Render with ./setup.sh --render-containerfile; rendering never builds an image.
+# Build context: the CITADEL source checkout. Runtime config, credentials,
+# policy, cached scan results, icons and generated Caddy files are not copied.
+# This image starts only the WebUI. Scans and optional providers are operated
+# separately with their required network access, clients and runtime state.
+ARG FEDORA_VERSION=45
+FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION}
+
+RUN dnf -y install \
+        python3 python3-dotenv python3-fastapi python3-jinja2 \
+        'python3-uvicorn+standard' \
+        bash ca-certificates coreutils curl-minimal findutils gawk grep \
+        iproute jq sed util-linux \
+    && dnf clean all
+
+WORKDIR /opt/safrano9999/CITADEL
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 FASTAPI_HOST=0.0.0.0
+
+COPY webui.py python_header.py scan.sh unroute.sh requirements.txt config.conf_example config.ini.example env.example citadel.svg ./
+COPY functions/*.py ./functions/
+COPY functions/providers/*.py ./functions/providers/
+COPY functions/exporters/*.py ./functions/exporters/
+COPY assets/ ./assets/
+COPY templates/ ./templates/
+COPY extensions/ui.json ./extensions/
+COPY extensions/enabled/caddy/extension.json extensions/enabled/caddy/config.json ./extensions/enabled/caddy/
+COPY extensions/enabled/cloudflare/extension.json extensions/enabled/cloudflare/config.json ./extensions/enabled/cloudflare/
+COPY extensions/enabled/localhost/extension.json extensions/enabled/localhost/config.json ./extensions/enabled/localhost/
+COPY extensions/enabled/subnet/extension.json extensions/enabled/subnet/config.json ./extensions/enabled/subnet/
+COPY extensions/enabled/tailscale/extension.json extensions/enabled/tailscale/config.json ./extensions/enabled/tailscale/
+
+RUN mkdir -p icons cache extensions/disabled \
+    && chmod 0755 scan.sh unroute.sh \
+    && python3 -s -c 'import dotenv, fastapi, jinja2, uvicorn'
+
+# TCP remains the application's default; Unix is selected through runtime env.
+# Supply configuration with an env file or bind mounts, not image build args.
+EXPOSE 11000
+CMD ["/usr/bin/python3", "-s", "webui.py"]

@@ -177,7 +177,6 @@ def main() -> int:
             update_key_values(
                 args.write_config,
                 {
-                    "CITADEL_CLOUDFLARE": "1",
                     "CITADEL_CLOUDFLARE_DOMAIN": result["CITADEL_CLOUDFLARE_DOMAIN"],
                     "CITADEL_CLOUDFLARE_ACCOUNT_ID": result[
                         "CITADEL_CLOUDFLARE_ACCOUNT_ID"

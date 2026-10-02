@@ -4,27 +4,23 @@ icons/
 services.json
 ss.json
 tailscale.json
-ts.json
-container_routes.json
-host_ss.json
-host_services.json
 last_scan.txt
 ports.filter.json
 config.ini
 config.conf
 .env
+.tunnel-token
 .systemd/
 /citadel.service
 
 # Extensions runtime
 extensions/providers_state.json
 extensions/enabled/*/routes.json
+extensions/enabled/*/status.json
+extensions/disabled/*/status.json
+/caddyfile/
 extensions/enabled/*/config.ini
 extensions/disabled/*/config.ini
-
-# Caddy generated routes
-CADDYFILES/
-key.pem
 
 # Python
 __pycache__/

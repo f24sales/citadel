@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Standalone Citadel checker. Python standard library only; no scan or login."""
+"""Standalone Citadel checker. Python standard library only; no scan or login.
+
+Exports use the server's index artifact/hash validation; running Caddy is not
+validated and exported files are never probed over HTTP.
+"""
 from __future__ import annotations
 
 import argparse
@@ -107,9 +111,27 @@ def check(base_url, extensions, timeout=5, workers=8):
         for entry in entries:
             name = entry["id"]
             status = entry["status"]
+            kind = entry.get("kind", "provider")
+            if kind not in ("provider", "export"):
+                raise ValueError("Unknown extension kind")
             if status not in ("PASS", "FAIL", "SKIP", "NOT_TESTED"):
                 raise ValueError("Invalid health status")
-            result["extensions"].append({"id": name, "status": status, "detail": entry.get("detail", "")})
+            checked = {"id": name, "kind": kind, "status": status, "detail": entry.get("detail", "")}
+            result["extensions"].append(checked)
+            if kind == "export":
+                artifacts = entry.get("artifacts", [])
+                checked.update(artifacts=artifacts, services=[])
+                for key in ("generated_file", "mappings_count", "generated_at", "label"):
+                    if key in entry:
+                        checked[key] = entry[key]
+                if status == "PASS":
+                    if entry.get("services"):
+                        raise ValueError("Passing export contains service routes")
+                    if (not isinstance(artifacts, list) or not artifacts
+                            or any(not isinstance(a, dict) or a.get("status") != "PASS" for a in artifacts)):
+                        raise ValueError("Passing export has no validated artifacts")
+                    checked["detail"] = "Index artifact validation reported by Citadel; running Caddy and live reachability NOT_TESTED"
+                continue
             if status == "PASS":
                 if not entry.get("services"):
                     raise ValueError("Passing extension has no routes")
@@ -117,8 +139,9 @@ def check(base_url, extensions, timeout=5, workers=8):
                     if service.get("status") != "PASS":
                         raise ValueError("Passing extension contains a failed service")
                     jobs.append((name, service, timeout))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            result["results"] = list(pool.map(lambda args: probe(*args), jobs))
+        if jobs:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                result["results"] = list(pool.map(lambda args: probe(*args), jobs))
         for entry in result["extensions"]:
             if any(r["extension"] == entry["id"] and r["status"] != "PASS" for r in result["results"]):
                 entry.update(status="FAIL", detail="External reachability check failed")

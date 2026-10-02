@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from common import now_iso, read_json, write_json
 
 
@@ -37,7 +38,7 @@ def main() -> int:
     parser.add_argument(
         "--routes-dir",
         help=(
-            "Optional runtime root for per-provider routes.json files. "
+            "Optional runtime root for routes.json or export status.json files. "
             "Provider code and configuration remain in --enabled-dir."
         ),
     )
@@ -78,6 +79,9 @@ def main() -> int:
         "enabled_providers": [],
         "considered_providers": [],
         "available_providers": [],
+        "enabled_exports": [],
+        "considered_exports": [],
+        "available_exports": [],
         "providers": {},
         "errors": [],
     }
@@ -108,27 +112,69 @@ def main() -> int:
 
     for provider_dir in provider_dirs:
         provider_id = os.path.basename(provider_dir)
-        state["enabled_providers"].append(provider_id)
+        kind = "provider"
+        try:
+            if not PROVIDER_ID.fullmatch(provider_id):
+                raise ValueError(f"Invalid provider ID: {provider_id!r}")
+            if not Path(provider_dir).resolve().is_relative_to(Path(args.enabled_dir).resolve()):
+                raise ValueError("Extension directory escapes enabled directory")
+            ext_payload = read_json(os.path.join(provider_dir, "extension.json"), {})
+            if not isinstance(ext_payload, dict):
+                raise ValueError("Invalid extension manifest")
+            kind = ext_payload.get("kind", "provider")
+            if kind not in ("provider", "export"):
+                raise ValueError(f"Unknown extension kind: {kind!r}")
+            provider_impl = ext_payload.get("provider", provider_id)
+            if not isinstance(provider_impl, str) or not PROVIDER_ID.fullmatch(provider_impl):
+                raise ValueError(f"Invalid provider implementation: {provider_impl!r}")
+            script_dir = Path(this_dir) if kind == "provider" else Path(this_dir).parent / "exporters"
+            script_path = str(script_dir / f"{provider_impl}.py")
+            if Path(script_path).resolve().parent != script_dir.resolve():
+                raise ValueError("Provider script escapes implementation directory")
+            filename = "status.json" if kind == "export" else "routes.json"
+            output_root = Path(args.routes_dir or args.enabled_dir).resolve()
+            routes_out = str(Path(args.routes_dir).absolute() / provider_id / filename
+                             if args.routes_dir else Path(provider_dir) / filename)
+            output = Path(routes_out)
+            # config.sh persists provider routes.json via a file symlink into
+            # a named volume. Validate the directory separately so that this
+            # exception cannot permit an escaping extension/runtime directory.
+            if not output.parent.resolve().is_relative_to(output_root):
+                raise ValueError("Extension output escapes runtime directory")
+            resolved_output = output.resolve()
+            if not resolved_output.is_relative_to(output_root):
+                link_target = Path(os.readlink(output)) if output.is_symlink() else None
+                persistent_routes = (
+                    kind == "provider" and output.name == "routes.json"
+                    and link_target is not None and link_target.is_absolute()
+                    and ".." not in link_target.parts
+                    and (not resolved_output.exists() or resolved_output.is_file())
+                )
+                if not persistent_routes:
+                    raise ValueError("Extension output escapes runtime directory")
+        except (ValueError, OSError, RuntimeError) as error:
+            state["errors"].append(f"Provider {provider_id}: {error}")
+            state["providers"][provider_id] = {
+                "kind": kind, "status": "error", "considered": False, "available": False,
+            }
+            print(f"  {provider_id}: {error}")
+            continue
 
-        ext_payload = read_json(os.path.join(provider_dir, "extension.json"), {})
-        provider_impl = str(ext_payload.get("provider") or provider_id).strip() or provider_id
-
-        script_path = os.path.join(this_dir, f"{provider_impl}.py")
-        if args.routes_dir:
-            routes_out = os.path.join(
-                os.path.abspath(args.routes_dir),
-                provider_id,
-                "routes.json",
-            )
-            os.makedirs(os.path.dirname(routes_out), exist_ok=True)
-        else:
-            routes_out = os.path.join(provider_dir, "routes.json")
+        if ext_payload.get("enabled") is False:
+            state["providers"][provider_id] = {
+                "kind": kind, "status": "disabled", "considered": False, "available": False,
+            }
+            continue
+        category = "exports" if kind == "export" else "providers"
+        state[f"enabled_{category}"].append(provider_id)
+        os.makedirs(os.path.dirname(routes_out), exist_ok=True)
 
         if not os.path.isfile(script_path):
             state["errors"].append(f"Missing provider script: {script_path}")
             state["providers"][provider_id] = {
                 "script": script_path,
                 "provider_impl": provider_impl,
+                "kind": kind,
                 "status": "missing",
                 "considered": False,
                 "available": False,
@@ -156,6 +202,19 @@ def main() -> int:
         run_res = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
         routes_payload = read_json(routes_out, {})
+        if not isinstance(routes_payload, dict):
+            routes_payload = {"errors": ["Invalid extension output"]}
+        if kind == "export" and (
+            routes_payload.get("kind") != "export"
+            or routes_payload.get("services") != {}
+            or not isinstance(routes_payload.get("artifacts"), list)
+            or not isinstance(routes_payload.get("errors"), list)
+            or not isinstance(routes_payload.get("considered"), bool)
+            or not isinstance(routes_payload.get("available"), bool)
+            or (not routes_payload.get("considered") and
+                (routes_payload.get("available") or routes_payload.get("artifacts")))
+        ):
+            routes_payload = {"errors": ["Invalid export status.json"]}
         considered = bool(routes_payload.get("considered", False))
         available = bool(routes_payload.get("available", False))
         routes_count = len(routes_payload.get("services", {}) or {})
@@ -167,8 +226,6 @@ def main() -> int:
             meta.append(f"domain={routes_payload.get('domain')}")
         if "running" in routes_payload:
             meta.append(f"running={yn(bool(routes_payload.get('running')))}")
-        if "fetch_enabled" in routes_payload:
-            meta.append(f"fetch={yn(bool(routes_payload.get('fetch_enabled')))}")
         if "base_url" in routes_payload and routes_payload.get("base_url"):
             meta.append(f"base={routes_payload.get('base_url')}")
         if "generated_file" in routes_payload and routes_payload.get("generated_file"):
@@ -176,14 +233,15 @@ def main() -> int:
         meta_text = f" meta[{', '.join(meta)}]" if meta else ""
 
         if considered:
-            state["considered_providers"].append(provider_id)
+            state[f"considered_{category}"].append(provider_id)
         if available:
-            state["available_providers"].append(provider_id)
+            state[f"available_{category}"].append(provider_id)
 
         state["providers"][provider_id] = {
             "script": script_path,
             "provider_impl": provider_impl,
-            "status": "ok" if run_res.returncode == 0 else "error",
+            "kind": kind,
+            "status": "ok" if run_res.returncode == 0 and not routes_payload.get("errors") else "error",
             "returncode": run_res.returncode,
             "considered": considered,
             "available": available,
@@ -191,6 +249,11 @@ def main() -> int:
             "routes_count": routes_count,
             "stderr": (run_res.stderr or "").strip()[-800:],
         }
+        if kind == "export":
+            state["providers"][provider_id]["artifacts"] = routes_payload.get("artifacts", [])
+            for key in ("generated_file", "mappings_count"):
+                if key in routes_payload:
+                    state["providers"][provider_id][key] = routes_payload[key]
 
         print(
             f"  {provider_id:<12} considered={yn(considered)} "

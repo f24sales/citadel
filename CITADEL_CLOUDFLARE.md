@@ -63,7 +63,6 @@ Check the Cloudflare zone status and nameserver state until Cloudflare reports t
 Create or reuse the CITADEL tunnel. Discover the selected account, zone, and tunnel identifiers through the Cloudflare API, then write all resolved values to `.env`. Never leave placeholders and never print secrets:
 
 ```env
-CITADEL_CLOUDFLARE=1
 CITADEL_CLOUDFLARE_DOMAIN=example.com
 CITADEL_CLOUDFLARE_ACCOUNT_ID=resolved_account_id
 CITADEL_CLOUDFLARE_ZONE_ID=resolved_zone_id
@@ -84,7 +83,7 @@ Initialize Cloudflare Access through the API before applying any email whitelist
 
 This requires `Account -> Access: Organizations, Identity Providers, and Groups -> Edit` for the selected account. Cloudflare error code `9999` from the organization lookup means Access has not been initialized and the agent should create the organization. If creation or reconciliation returns HTTP 403 with error code `10000`, stop and ask the user to edit or replace the API token with that permission. Never fall back to exposing routes without Access after an email whitelist is configured.
 
-`cloudflared.service` is owned and started by the container's systemd configuration. CITADEL only reconciles Cloudflare routes when `CITADEL_CLOUDFLARE=1`; it never starts or stops the connector service.
+`cloudflared.service` is owned and started by the container's systemd configuration. CITADEL reconciles Cloudflare routes when the extension is enabled and an API token is configured and verified; it never starts or stops the connector service.
 
 ## 2. Conservative Cloudflare Mapping Defaults
 
@@ -113,7 +112,6 @@ If `CLOUDFLARE_EMAIL` is missing or invalid, CITADEL skips Cloudflare during sca
 During `scan.sh`, after local services have been discovered and before Cloudflare routes are applied, check these conditions:
 
 - Cloudflare provider is in `extensions/enabled/cloudflare`
-- `CITADEL_CLOUDFLARE=1`
 - `CLOUDFLARE_API_TOKEN` exists and is valid
 - `CLOUDFLARE_EMAIL` exists and is valid
 - HTTP services were discovered

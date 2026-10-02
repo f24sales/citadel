@@ -49,15 +49,11 @@ ENABLED_EXT_DIR="$EXTENSIONS_DIR/enabled"
 PROVIDER_ROUTES_DIR="$SCRIPT_DIR/extensions/enabled"
 CONFIG="$SCRIPT_DIR/config.ini"
 SS_FILE="$SCRIPT_DIR/ss.json"
-HOST_SS_FILE="$SCRIPT_DIR/host_ss.json"
-HOST_SERVICES_FILE="$SCRIPT_DIR/host_services.json"
 SERVICES_FILE="$SCRIPT_DIR/services.json"
 TAILSCALE_FILE="$SCRIPT_DIR/tailscale.json"
-CONTAINER_ROUTES_FILE="$SCRIPT_DIR/container_routes.json"
 PORT_FILTER_FILE="$SCRIPT_DIR/ports.filter.json"
 PROVIDERS_STATE_FILE="$SCRIPT_DIR/extensions/providers_state.json"
 TIMESTAMP_FILE="$SCRIPT_DIR/last_scan.txt"
-CADDY_OUTPUT_FILE="$SCRIPT_DIR/CADDYFILES/Caddyfile"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
 SCAN_LOCK_FILE="${CITADEL_SCAN_LOCK_FILE:-$RUNTIME_DIR/citadel-scan-${UID}.lock}"
 MAX_FETCH_BYTES=1048576
@@ -98,22 +94,15 @@ case "${CITADEL_USER_AGENT_VALUE,,}" in
 esac
 CURL_USER_AGENT_ARGS=()
 [[ -n "$CITADEL_USER_AGENT_VALUE" ]] && CURL_USER_AGENT_ARGS=(--user-agent "$CITADEL_USER_AGENT_VALUE")
-CLEAR_TAILSCALE_VALUE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-    'from python_header import get; print(get("CITADEL_CLEAR_TAILSCALE", "0"))')"
-CLEAR_TAILSCALE=false
-[[ "$CLEAR_TAILSCALE_VALUE" == "1" ]] && CLEAR_TAILSCALE=true
-CADDY_HTTPS_START="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-    'from python_header import get; print(get("CITADEL_CADDY_HTTPS_START", "0"))')"
-CADDY_RANGE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-    'from python_header import get; print(get("CITADEL_CADDY_RANGE", "1"))')"
-CADDY_BACKEND="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-    'from python_header import get; print(get("CITADEL_CADDY_BACKEND", ""))')"
-CADDY_HOST="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-    'from python_header import get; print(get("CITADEL_CADDY_HOST", ""))')"
-CADDY_REAL_IP_PORTS="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-    'from python_header import get; print(get("CITADEL_CADDY_REAL_IP_PORTS", ""))')"
 CITADEL_PORT_VALUE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
     'from python_header import get; print(get("CITADEL_WEBUI_PORT", "11000"))')"
+CITADEL_HIDE_HTTP_VALUE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
+    'from python_header import get_bool; print(str(get_bool("CITADEL_HIDE_HTTP_WEBUI_DUPE", True)).lower())')"
+
+LOGO_PERSISTENT_VALUE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
+    'from python_header import get; print(get("CITADEL_LOGO_PERSISTENT", "1"))')"
+LOGO_PERSISTENT=false
+case "${LOGO_PERSISTENT_VALUE,,}" in 1|true|yes|on) LOGO_PERSISTENT=true ;; esac
 
 HOST_IP="${CITADEL_SUBNET_IP:-}"
 HOST_IP="${HOST_IP#"${HOST_IP%%[![:space:]]*}"}"
@@ -121,98 +110,19 @@ HOST_IP="${HOST_IP%"${HOST_IP##*[![:space:]]}"}"
 case "${HOST_IP,,}" in
     ""|blank|null) HOST_IP="" ;;
 esac
-CONTAINER_MODE="${CITADEL_CONTAINER:-0}"
-CONTAINER_MAP="${CITADEL_CONTAINER_MAP:-0}"
-DEDUPE_PORT="${CITADEL_DEDUPE_PORT:-}"
-case "${CONTAINER_MODE,,}" in
-    1|true|yes|on) CONTAINER_MODE=true ;;
-    *) CONTAINER_MODE=false ;;
-esac
-case "${CONTAINER_MAP,,}" in
-    1|true|yes|on) CONTAINER_MAP=true ;;
-    *) CONTAINER_MAP=false ;;
-esac
-if ! "$CONTAINER_MODE"; then
-    CONTAINER_MAP=false
-fi
-case "${DEDUPE_PORT,,}" in
-    ""|blank|null) DEDUPE_PORT="" ;;
-esac
-if "$CONTAINER_MAP" && [[ -n "$DEDUPE_PORT" ]] && { [[ ! "$DEDUPE_PORT" =~ ^[0-9]+$ ]] || (( DEDUPE_PORT < 1 || DEDUPE_PORT > 65535 )); }; then
-    echo "CITADEL_DEDUPE_PORT must be blank or a port between 1 and 65535" >&2
-    exit 2
-fi
-
-if "$CLEAR_TAILSCALE"; then
-    if [[ -n "$PROVIDER_FILTER" && "$PROVIDER_FILTER" != "tailscale" ]]; then
-        echo "CITADEL_CLEAR_TAILSCALE=1 requires a full scan or --provider tailscale" >&2
-        exit 2
-    fi
-    [[ -d "$ENABLED_EXT_DIR/tailscale" ]] || {
-        echo "CITADEL_CLEAR_TAILSCALE=1 requires the enabled Tailscale provider" >&2
-        exit 1
-    }
-    TAILSCALE_ENABLED_VALUE="$(PYTHONPATH="$SCRIPT_DIR" python3 -c \
-        'from python_header import get; print(get("CITADEL_TAILSCALE", "false"))')"
-    case "${TAILSCALE_ENABLED_VALUE,,}" in
-        1|true|yes|on) ;;
-        *)
-            echo "CITADEL_CLEAR_TAILSCALE=1 requires CITADEL_TAILSCALE to be enabled" >&2
-            exit 1
-            ;;
-    esac
-    command -v tailscale >/dev/null 2>&1 || {
-        echo "CITADEL_CLEAR_TAILSCALE=1 requires the tailscale CLI" >&2
-        exit 1
-    }
-
-    echo "=== Clearing all Tailscale Serve/Funnel routes ==="
-    tailscale serve reset
-    TAILSCALE_STATUS="$(tailscale serve status --json)"
-    printf '%s' "$TAILSCALE_STATUS" | python3 -c '
-import json, sys
-payload = json.load(sys.stdin)
-if not isinstance(payload, dict):
-    raise SystemExit("tailscale serve status did not return a JSON object")
-remaining = [key for key in ("TCP", "Web", "AllowFunnel", "Services", "Foreground") if payload.get(key)]
-if remaining:
-    raise SystemExit("tailscale serve reset left active state: " + ", ".join(remaining))
-'
-    PYTHONPATH="$PROVIDERS_DIR" python3 - \
-        "$TAILSCALE_FILE" "$PROVIDER_ROUTES_DIR/tailscale/routes.json" <<'PY'
-import sys
-from atomic_io import atomic_write_json
-
-for path in sys.argv[1:]:
-    atomic_write_json(path, {})
-PY
-    echo "Tailscale Serve state and CITADEL assignments cleared"
-    echo
-fi
-
 LOCAL_SSL="-k"
 [[ -n "$CA_CERT" && -f "$CA_CERT" ]] && NET_SSL="--cacert $CA_CERT" || NET_SSL="-k"
 
 echo "=== Scanning ports (ss -tlnHp) ==="
 ss -tlnHp | python3 -c "
 import json
-import os
 import re
 import socket
 import sys
 
-old_procs = {}
-old_pids = {}
 ss_file, providers_dir = sys.argv[1:3]
 sys.path.insert(0, providers_dir)
 from atomic_io import atomic_write_json
-if os.path.exists(ss_file):
-    try:
-        old = json.load(open(ss_file))
-        old_procs = {p['port']: p.get('process') for p in old if p.get('process')}
-        old_pids = {p['port']: p.get('pid') for p in old if p.get('pid')}
-    except Exception:
-        pass
 
 ports = {}
 for line in sys.stdin:
@@ -239,11 +149,6 @@ for line in sys.stdin:
     pid_match = re.search(r'\bpid=(\d+)', rest)
     if pid_match:
         pid = int(pid_match.group(1))
-    if not process and port in old_procs:
-        process = old_procs[port]
-    if not pid and port in old_pids:
-        pid = old_pids[port]
-
     try:
         service = socket.getservbyport(port, 'tcp')
     except OSError:
@@ -275,32 +180,6 @@ atomic_write_json(ss_file, [ports[port] for port in sorted(ports)])
 " "$SS_FILE" "$PROVIDERS_DIR"
 echo "Ports written to ss.json"
 echo
-
-if "$CONTAINER_MODE"; then
-    command -v nmap >/dev/null 2>&1 || {
-        echo "CITADEL_CONTAINER=1 requires nmap" >&2
-        exit 2
-    }
-    echo "=== Scanning host.containers.internal listeners with Nmap ==="
-    HOST_NMAP_FILE="$(mktemp)"
-    nmap -Pn -n -sT -sV --version-light -p- --open --stats-every 15s \
-        -oN /dev/null -oX "$HOST_NMAP_FILE" host.containers.internal |
-        awk '/^Stats:/ || /Timing: About/ { print; fflush() }'
-    PYTHONPATH="$FUNCTIONS_DIR:$PROVIDERS_DIR" python3 -c '
-import sys
-from pathlib import Path
-from atomic_io import atomic_write_json
-from container_discovery import parse_nmap_listeners
-
-atomic_write_json(
-    sys.argv[2],
-    parse_nmap_listeners(Path(sys.argv[1]), "host.containers.internal"),
-)
-' "$HOST_NMAP_FILE" "$HOST_SS_FILE"
-    rm -f "$HOST_NMAP_FILE"
-    echo "Host listeners written to host_ss.json"
-    echo
-fi
 
 echo "=== Applying Port Filter Policy ==="
 python3 -c "
@@ -430,9 +309,18 @@ PY
 }
 
 root_http_status() {
-    local url="$1" ssl="$2"
-    curl -s "${CURL_USER_AGENT_ARGS[@]}" $ssl --max-time 3 --location \
-        -o /dev/null -w "%{http_code}" "$url/" 2>/dev/null || true
+    local url="$1" ssl="$2" body status
+    body="$(mktemp)"
+    status="$(curl -s "${CURL_USER_AGENT_ARGS[@]}" $ssl --max-time 3 \
+        --max-filesize "$MAX_FETCH_BYTES" -o "$body" -w "%{http_code}" "$url/" 2>/dev/null || true)"
+    # Go/Caddy rejects plaintext on a TLS listener with an HTTP 400 response.
+    # That response must never turn an HTTPS-only listener into an HTTP route.
+    if [[ "$url" == http://* && "$status" == "400" ]] && \
+        grep -Fqi "Client sent an HTTP request to an HTTPS server" "$body"; then
+        status=""
+    fi
+    rm -f "$body"
+    printf '%s' "$status"
 }
 
 is_discoverable_status() {
@@ -440,31 +328,22 @@ is_discoverable_status() {
 }
 
 probe_http() {
-    local host="$1" port="$2" https_status http_status https_ok=false http_ok=false
-    local ssl
+    local host="$1" port="$2" status url ssl
     [[ "$host" == "127.0.0.1" ]] && ssl="$LOCAL_SSL" || ssl="$NET_SSL"
-    https_status="$(root_http_status "https://${host}:${port}" "$ssl")"
-    if [[ "$https_status" == "404" ]]; then
-        echo ""
-        return
+    url="https://${host}:${port}"
+    status="$(root_http_status "$url" "$ssl")"
+    [[ "$status" != "404" ]] || return 0
+    if ! is_discoverable_status "$status"; then
+        url="http://${host}:${port}"
+        status="$(root_http_status "$url" "$ssl")"
+        is_discoverable_status "$status" || return 0
     fi
-    http_status="$(root_http_status "http://${host}:${port}" "$ssl")"
-    is_discoverable_status "$https_status" && https_ok=true
-    is_discoverable_status "$http_status" && http_ok=true
-    if $https_ok && body_is_html "https://${host}:${port}/" "$ssl"; then
-        echo "https://${host}:${port}|html"
-    elif $http_ok && body_is_html "http://${host}:${port}/" "$ssl"; then
-        echo "http://${host}:${port}|html"
-    elif $https_ok && is_openai_v1 "https://${host}:${port}" "$ssl"; then
-        echo "https://${host}:${port}|openai-v1"
-    elif $http_ok && is_openai_v1 "http://${host}:${port}" "$ssl"; then
-        echo "http://${host}:${port}|openai-v1"
-    elif $https_ok; then
-        echo "https://${host}:${port}|http-service"
-    elif $http_ok; then
-        echo "http://${host}:${port}|http-service"
+    if body_is_html "$url/" "$ssl"; then
+        echo "$url|html"
+    elif is_openai_v1 "$url" "$ssl"; then
+        echo "$url|openai-v1"
     else
-        echo ""
+        echo "$url|http-service"
     fi
 }
 
@@ -488,6 +367,11 @@ try_fetch_icon() {
         local dest="$ICONS_DIR/${port}${ext}"
         mv "$tmp" "$dest"
         chmod 644 "$dest"
+        # A refreshed logo replaces all older formats for this exact port.
+        local old_icon
+        for old_icon in "$ICONS_DIR/$port".{png,svg,webp,gif,ico}; do
+            [[ "$old_icon" == "$dest" ]] || rm -f -- "$old_icon"
+        done
         echo "${port}${ext}"
     else
         rm -f "$tmp"
@@ -515,12 +399,7 @@ import sys
 f, providers_dir = sys.argv[1:3]
 sys.path.insert(0, providers_dir)
 from atomic_io import atomic_write_json
-try:
-    d = json.load(open(f))
-except Exception:
-    d = {}
-d['scheme'] = None
-d['network_ip'] = None
+d = {'scheme': None, 'network_ip': None, 'title': None, 'icon': None}
 atomic_write_json(f, d)
 " "$CACHE_FILE" "$PROVIDERS_DIR"
         fi
@@ -575,41 +454,6 @@ atomic_write_json(sys.argv[5], {
         continue
     fi
 
-    if [[ -f "$CACHE_FILE" ]]; then
-        IFS=$'\t' read -r EXISTING_TITLE EXISTING_ICON < <(python3 -c "
-import json
-import sys
-try:
-    d = json.load(open(sys.argv[1]))
-    print((d.get('title') or '') + '\\t' + (d.get('icon') or ''))
-except Exception:
-    print('\\t')
-" "$CACHE_FILE" 2>/dev/null || printf '\t\n')
-
-        ICON_ON_DISK=false
-        [[ -n "$EXISTING_ICON" && -f "$ICONS_DIR/$EXISTING_ICON" ]] && ICON_ON_DISK=true
-
-        if [[ -n "$EXISTING_TITLE" ]] && $ICON_ON_DISK; then
-            python3 -c "
-import json
-import sys
-f, providers_dir = sys.argv[1], sys.argv[4]
-sys.path.insert(0, providers_dir)
-from atomic_io import atomic_write_json
-try:
-    d = json.load(open(f))
-except Exception:
-    d = {}
-d['scheme'] = sys.argv[2]
-d['network_ip'] = sys.argv[3] or None
-d['kind'] = 'html'
-atomic_write_json(f, d)
-" "$CACHE_FILE" "$SCHEME" "$NETWORK_IP" "$PROVIDERS_DIR"
-            printf "%-8s cached: \"%s\"%s\n" "$SCHEME" "$EXISTING_TITLE" "$NET_LABEL"
-            continue
-        fi
-    fi
-
     printf "%-8s fetching title+icons..." "$SCHEME"
 
     TMP_HTML="$(mktemp)"
@@ -646,8 +490,6 @@ for _, href in candidates:
     print(href)
 ' || true)"
 
-    rm -f "$ICONS_DIR/${PORT}".*
-
     mapfile -t ICON_URLS < <(
         printf '%s\n' "$FAVICON_CANDIDATES" |
             PYTHONPATH="$FUNCTIONS_DIR" python3 -c '
@@ -664,10 +506,17 @@ for url in safe_icon_urls(sys.argv[1], sys.argv[2], list(sys.stdin)):
     ICON_URLS+=("${LOCAL_URL}/apple-touch-icon.png")
 
     ICON_NAME=""
-    for FAVICON_URL in "${ICON_URLS[@]}"; do
-        ICON_NAME="$(try_fetch_icon "$FAVICON_URL" "$PORT" "$LOCAL_SSL")"
-        [[ -n "$ICON_NAME" ]] && break
-    done
+    if "$LOGO_PERSISTENT"; then
+        ICON_NAME="$(PYTHONPATH="$FUNCTIONS_DIR" python3 -c \
+            'from scan_policy import existing_icon; import sys; print(existing_icon(sys.argv[1], int(sys.argv[2])))' \
+            "$ICONS_DIR" "$PORT")"
+    fi
+    if [[ -z "$ICON_NAME" ]]; then
+        for FAVICON_URL in "${ICON_URLS[@]}"; do
+            ICON_NAME="$(try_fetch_icon "$FAVICON_URL" "$PORT" "$LOCAL_SSL")"
+            [[ -n "$ICON_NAME" ]] && break
+        done
+    fi
 
     python3 -c "
 import sys
@@ -686,60 +535,6 @@ atomic_write_json(sys.argv[5], {
     [[ -n "$TITLE" ]] && echo "\"$TITLE\"${NET_LABEL}" || echo "(no title)${NET_LABEL}"
 done
 
-HOST_RESULTS_FILE=""
-if "$CONTAINER_MODE"; then
-    HOST_RESULTS_FILE="$(mktemp)"
-    echo "=== Probing host.containers.internal listeners ==="
-    python3 -c '
-import json
-import sys
-for row in json.load(open(sys.argv[1], encoding="utf-8")):
-    print(row["port"])
-' "$HOST_SS_FILE" | while read -r PORT; do
-        printf "Host port %-6s " "$PORT"
-        HOST_PROBE="$(probe_http "host.containers.internal" "$PORT")"
-        TITLE=""
-        if [[ -n "$HOST_PROBE" ]]; then
-            HOST_URL="${HOST_PROBE%%|*}"
-            HOST_KIND="${HOST_PROBE##*|}"
-            HOST_SCHEME="${HOST_URL%%://*}"
-            if [[ "$HOST_KIND" == "openai-v1" ]]; then
-                TITLE="OpenAI v1 API"
-            elif [[ "$HOST_KIND" == "http-service" ]]; then
-                TITLE="HTTP Service"
-            else
-                HOST_HTML="$(curl -sS "${CURL_USER_AGENT_ARGS[@]}" $NET_SSL --max-time 5 --max-filesize "$MAX_FETCH_BYTES" \
-                    --location "$HOST_URL/" 2>/dev/null || true)"
-                TITLE="$(printf '%s' "$HOST_HTML" | python3 -c '
-import re
-import sys
-html = sys.stdin.read()
-match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-print(match.group(1).strip() if match else "")
-')"
-            fi
-            python3 -c '
-import json
-import sys
-print(json.dumps({
-    "port": int(sys.argv[1]),
-    "scheme": sys.argv[2],
-    "kind": sys.argv[3],
-    "title": sys.argv[4] or None,
-}))
-' "$PORT" "$HOST_SCHEME" "$HOST_KIND" "$TITLE" >> "$HOST_RESULTS_FILE"
-            printf "%-8s %s\n" "$HOST_SCHEME" "${TITLE:-(no title)}"
-        else
-            python3 -c '
-import json
-import sys
-print(json.dumps({"port": int(sys.argv[1]), "scheme": None, "kind": None, "title": None}))
-' "$PORT" >> "$HOST_RESULTS_FILE"
-            echo "→ no HTTP service (other)"
-        fi
-    done
-fi
-
 echo "=== Building services.json ==="
 python3 -c "
 import datetime
@@ -753,43 +548,22 @@ import sys
     icons_dir,
     out_file,
     providers_dir,
-    container_mode_raw,
-    host_ss_file,
-    host_results_file,
-    container_map_raw,
-    dedupe_raw,
-    container_routes_file,
-    host_services_file,
     https_only_raw,
-) = sys.argv[1:14]
+) = sys.argv[1:7]
 sys.path.insert(0, providers_dir)
 from atomic_io import atomic_write_json
-sys.path.insert(0, os.path.dirname(providers_dir))
-from container_discovery import assign_host_route_ports
 
-def int_or_none(value):
-    try:
-        port = int(str(value).strip())
-    except Exception:
-        return None
-    return port if port > 0 else None
+with open(ss_file) as handle:
+    ss_raw = json.load(handle)
+if not isinstance(ss_raw, list):
+    raise ValueError('invalid listener inventory')
 
-def publish_port_for(port):
-    for key, value in os.environ.items():
-        if not key.endswith('_PORT') or key.endswith('_PUBLISH_PORT'):
-            continue
-        if int_or_none(value) != port:
-            continue
-        publish_key = f'{key[:-5]}_PUBLISH_PORT'
-        publish_port = int_or_none(os.environ.get(publish_key))
-        if publish_port:
-            return publish_port
-    return port
-
-try:
-    ss_raw = json.load(open(ss_file))
-except Exception:
-    ss_raw = []
+# Discovery metadata is disposable; retained logos live separately in icons/.
+active_ports = {str(row['port']) for row in ss_raw}
+for entry in os.scandir(cache_dir):
+    stem, suffix = os.path.splitext(entry.name)
+    if suffix == '.json' and stem.isdigit() and stem not in active_ports:
+        os.unlink(entry.path)
 
 http_services = []
 other_ports = []
@@ -826,11 +600,9 @@ for p in ss_raw:
                 break
 
     if scheme:
-        publish_port = publish_port_for(port)
         display_name = title or f'Port {port}'
         http_services.append({
             'port': port,
-            'publish_port': publish_port if publish_port != port else None,
             'addr': p.get('addr'),
             'addrs': p.get('addrs') or ([p.get('addr')] if p.get('addr') else []),
             'listeners': p.get('listeners') or [],
@@ -842,7 +614,7 @@ for p in ss_raw:
             'scheme': scheme,
             'network_ip': c.get('network_ip'),
             'urls': (
-                {'localhost': f'{scheme}://127.0.0.1:{publish_port}'}
+                {'localhost': f'{scheme}://127.0.0.1:{port}'}
                 if https_only_raw != 'true' or scheme == 'https'
                 else {}
             ),
@@ -862,115 +634,19 @@ payload = {
     'https_only': https_only_raw == 'true',
     'http_services': http_services,
     'other_ports': other_ports,
-    'host_http_services': [],
-    'host_other_ports': [],
-    'deduplicated_ports': [],
 }
-host_payload = {
-    'generated_at': payload['generated_at'],
-    'host_http_services': [],
-    'host_other_ports': [],
-    'deduplicated_ports': [],
-    'errors': [],
-}
-
-if container_mode_raw == 'true':
-    try:
-        host_rows = json.load(open(host_ss_file, encoding='utf-8'))
-    except Exception:
-        host_rows = []
-    results = {}
-    if host_results_file and os.path.exists(host_results_file):
-        with open(host_results_file, encoding='utf-8') as handle:
-            for line in handle:
-                try:
-                    result = json.loads(line)
-                    results[int(result['port'])] = result
-                except Exception:
-                    continue
-
-    host_http_services = []
-    host_other_ports = []
-    for row in host_rows:
-        port = int(row.get('port') or 0)
-        result = results.get(port, {})
-        scheme = result.get('scheme')
-        if scheme in ('http', 'https'):
-            title = result.get('title') or f'Host Port {port}'
-            host_http_services.append({
-                **row,
-                'port': port,
-                'origin': 'host',
-                'origin_host': 'host.containers.internal',
-                'origin_port': port,
-                'route_port': None,
-                'title': title,
-                'name': title,
-                'icon': None,
-                'scheme': scheme,
-                'kind': result.get('kind'),
-                'urls': {},
-            })
-        else:
-            host_other_ports.append({**row, 'origin': 'host'})
-
-    try:
-        previous_routes = json.load(open(container_routes_file, encoding='utf-8'))
-    except Exception:
-        previous_routes = {}
-    previous_assignments = previous_routes.get('assignments', {}) if isinstance(previous_routes, dict) else {}
-    dedupe_start = int(dedupe_raw) if container_map_raw == 'true' and dedupe_raw else None
-    host_http_services, assignments, assignment_errors = assign_host_route_ports(
-        http_services,
-        host_http_services,
-        dedupe_start,
-        previous_assignments,
-    )
-    payload['host_http_services'] = host_http_services
-    payload['host_other_ports'] = host_other_ports
-    payload['container_errors'] = assignment_errors
-    payload['deduplicated_ports'] = [
-        {
-            'origin': key,
-            'origin_port': int(key.rsplit(':', 1)[1]),
-            'route_port': route_port,
-        }
-        for key, route_port in sorted(assignments.items(), key=lambda item: item[1])
-    ]
-    if container_map_raw == 'true' and dedupe_start is not None:
-        atomic_write_json(container_routes_file, {
-            'dedupe_start': dedupe_start,
-            'assignments': assignments,
-        })
-    host_payload = {
-        'generated_at': payload['generated_at'],
-        'host_http_services': host_http_services,
-        'host_other_ports': host_other_ports,
-        'deduplicated_ports': payload['deduplicated_ports'],
-        'errors': assignment_errors,
-    }
-
-atomic_write_json(host_services_file, host_payload)
 atomic_write_json(out_file, payload, indent=None)
-" "$SS_FILE" "$CACHE_DIR" "$ICONS_DIR" "$SERVICES_FILE" "$PROVIDERS_DIR" \
-    "$CONTAINER_MODE" "$HOST_SS_FILE" "$HOST_RESULTS_FILE" "$CONTAINER_MAP" "$DEDUPE_PORT" "$CONTAINER_ROUTES_FILE" \
-    "$HOST_SERVICES_FILE" "$HTTPS_ONLY"
-[[ -z "$HOST_RESULTS_FILE" ]] || rm -f "$HOST_RESULTS_FILE"
+" "$SS_FILE" "$CACHE_DIR" "$ICONS_DIR" "$SERVICES_FILE" "$PROVIDERS_DIR" "$HTTPS_ONLY"
 echo "services.json written"
 echo
 
-echo "=== Rendering central Caddy routes ==="
-python3 "$FUNCTIONS_DIR/caddy_export.py" \
+# Hide only the duplicate WebUI tile; retain its backend for route providers.
+# Match this running instance, never a different container's Citadel by title.
+python3 "$FUNCTIONS_DIR/scan_policy.py" \
     --services "$SERVICES_FILE" \
-    --output "$CADDY_OUTPUT_FILE" \
-    --https-start "$CADDY_HTTPS_START" \
-    --spacing "$CADDY_RANGE" \
-    --backend "$CADDY_BACKEND" \
-    --host "$CADDY_HOST" \
-    --real-ip-ports "$CADDY_REAL_IP_PORTS" \
-    --preferred-port "$CITADEL_PORT_VALUE"
-echo "Caddyfile written: $CADDY_OUTPUT_FILE"
-echo
+    --http-port "$CITADEL_PORT_VALUE" \
+    --hide-http "$CITADEL_HIDE_HTTP_VALUE" \
+    --user-agent "$CITADEL_USER_AGENT_VALUE"
 
 if [[ -z "$PROVIDER_FILTER" ]]; then
     echo "=== Applying Cloudflare Defaults ==="
@@ -1003,9 +679,7 @@ if [[ -f "$PROVIDERS_DIR/dispatch.py" ]]; then
             --provider "$PROVIDER_FILTER" \
             --strict
     else
-        DISPATCH_STRICT=()
-        "$CLEAR_TAILSCALE" && DISPATCH_STRICT=(--strict)
-        if ! python3 "$PROVIDERS_DIR/dispatch.py" \
+        python3 "$PROVIDERS_DIR/dispatch.py" \
             --enabled-dir "$ENABLED_EXT_DIR" \
             --services-file "$SERVICES_FILE" \
             --cache-dir "$CACHE_DIR" \
@@ -1013,11 +687,7 @@ if [[ -f "$PROVIDERS_DIR/dispatch.py" ]]; then
             --state-file "$PROVIDERS_STATE_FILE" \
             --routes-dir "$PROVIDER_ROUTES_DIR" \
             --tailscale-file "$TAILSCALE_FILE" \
-            "${DISPATCH_STRICT[@]}"; then
-            if "$CLEAR_TAILSCALE"; then
-                exit 1
-            fi
-        fi
+            --strict
     fi
 else
     echo "dispatch.py missing: $PROVIDERS_DIR/dispatch.py"

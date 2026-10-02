@@ -4,20 +4,55 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-print_caddy_hint() {
+usage() {
     cat <<'EOF'
+Usage: ./setup.sh [--show]
+       ./setup.sh --render-containerfile
 
-Central Caddy export (when CITADEL_CADDY_HTTPS_START is non-zero):
-  1. Mount this instance's CITADEL named volume read-only at /etc/caddy/<instance>.
-  2. Add one line to the main Caddyfile: import <instance>/CADDYFILES/Caddyfile
-The generated file is refreshed by every successful CITADEL scan.
-Reload or restart central Caddy after that file changes.
+Default: configure CITADEL and render its user service (existing CONTAINER
+directory checkouts retain their container configuration workflow).
+
+--render-containerfile copies Containerfile.example to Containerfile only.
+It does not configure, build, push, or start anything. Run from a source
+checkout; the future build context is this directory. A matching Containerfile
+is retained; move a custom or outdated Containerfile aside before regenerating.
+Compose/Quadlet generation remains the separate config.sh --render-container
+workflow; CITADEL uses the image's python3 -s webui.py startup command.
 EOF
 }
 
+for argument in "$@"; do
+    case "$argument" in
+        --help|-h) usage; exit 0 ;;
+        --render-containerfile)
+            if [ "$#" -ne 1 ]; then
+                echo "Use --render-containerfile on its own." >&2
+                exit 2
+            fi
+            template="$SCRIPT_DIR/Containerfile.example"
+            target="$SCRIPT_DIR/Containerfile"
+            if [ ! -f "$template" ]; then
+                echo "Missing Containerfile.example." >&2
+                exit 1
+            fi
+            if [ -L "$target" ] || [ -e "$target" ]; then
+                if [ ! -L "$target" ] && [ -f "$target" ] && cmp -s "$template" "$target"; then
+                    echo "  Unchanged: $target"
+                    exit 0
+                fi
+                echo "Keeping existing Containerfile; move it aside before rendering." >&2
+                exit 1
+            fi
+            # Refuse a concurrently created destination, including symlinks.
+            (set -o noclobber; cat "$template" > "$target")
+            echo "  Rendered: $target (no image build or service changes)"
+            exit 0
+            ;;
+    esac
+done
+
 if [ "$(basename "$(cd "$SCRIPT_DIR/.." && pwd -P)")" = "CONTAINER" ]; then
     "$SCRIPT_DIR/config.sh" "$@"
-    print_caddy_hint
     exit 0
 fi
 
@@ -28,4 +63,3 @@ printf '\nLink the rendered systemd user service:\n'
 printf '  ln -sfn %q %q\n' \
     "$SCRIPT_DIR/citadel.service" \
     "$USER_UNIT_DIR/citadel.service"
-print_caddy_hint

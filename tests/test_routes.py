@@ -1,386 +1,90 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
-
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-FUNCTIONS_DIR = ROOT / "functions"
-PROVIDERS_DIR = FUNCTIONS_DIR / "providers"
-sys.path.insert(0, str(FUNCTIONS_DIR))
-sys.path.insert(0, str(PROVIDERS_DIR))
+sys.path.insert(0, str(ROOT / "functions/providers"))
+from common import routable_services, route_record
 
-from common import routable_services, route_record  # noqa: E402
-from caddy_export import render_caddyfile  # noqa: E402
-
-
-def load_tailscale_provider():
-    spec = importlib.util.spec_from_file_location(
-        "citadel_tailscale_route_helpers",
-        PROVIDERS_DIR / "tailscale.py",
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+spec = importlib.util.spec_from_file_location("citadel_route_helpers", ROOT / "functions/providers/tailscale.py")
+tailscale = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tailscale)
 
 
-tailscale = load_tailscale_provider()
-
-
-def exact_route_payload(
-    port: int,
-    public_scheme: str,
-    target: str,
-    *,
-    authority: str = "node.example.ts.net",
-) -> dict:
-    listener = {"HTTPS": True} if public_scheme == "https" else {"HTTP": True}
-    return {
-        "TCP": {str(port): listener},
-        "Web": {
-            f"{authority}:{port}": {
-                "Handlers": {"/": {"Proxy": target}},
-            },
-        },
-    }
+def route(port="8080"):
+    return {"TCP": {port: {"HTTPS": True}},
+            "Web": {f"node.example.ts.net:{port}": {"Handlers": {"/": {"Proxy": f"http://127.0.0.1:{port}"}}}}}
 
 
 class RouteHelperTests(unittest.TestCase):
-    def test_caddy_export_is_deterministic_and_prioritizes_citadel(self) -> None:
-        rendered = render_caddyfile(
-            {
-                "http_services": [
-                    {"port": 9090, "scheme": "https", "title": "Cockpit"},
-                    {"port": 11000, "scheme": "http", "title": "CITADEL"},
-                    {"port": 8642, "scheme": "http", "title": "API"},
-                    {"port": 20241, "scheme": "http", "addrs": ["127.0.0.1"]},
-                    {"port": 11040, "scheme": "http", "addrs": ["10.89.3.34", "127.0.0.1"]},
-                    {"port": 9999, "scheme": "http", "origin": "host"},
-                ],
-            },
-            https_start="3000",
-            spacing="1",
-            backend="fedora45-ai-safrano9999-ucore",
-            host="ucore.tailb13f39.ts.net",
-            preferred_port="11000",
-        )
-        self.assertLess(rendered.index(":3000"), rendered.index(":3001"))
-        self.assertIn("3000 -> fedora45-ai-safrano9999-ucore:11000", rendered)
-        self.assertIn("3001 -> fedora45-ai-safrano9999-ucore:8642", rendered)
-        self.assertIn("3002 -> fedora45-ai-safrano9999-ucore:9090", rendered)
-        self.assertNotIn("192.168.11.55", rendered)
-        self.assertNotIn(":9999", rendered)
-        self.assertNotIn(":20241", rendered)
-        self.assertIn(":11040", rendered)
-        self.assertIn("tls_insecure_skip_verify", rendered)
-        self.assertNotIn("X-Real-IP", rendered)
-
-    def test_caddy_real_ip_header_is_limited_to_selected_backend_ports(self) -> None:
-        rendered = render_caddyfile(
-            {"http_services": [
-                {"port": 8000, "scheme": "http"},
-                {"port": 8443, "scheme": "https"},
-                {"port": 18789, "scheme": "http"},
-            ]},
-            https_start="3000", spacing="1", backend="gateway",
-            host="node.example.ts.net", real_ip_ports="18789, 8443,18789",
-        )
-        self.assertIn("\treverse_proxy gateway:8000\n", rendered)
-        self.assertIn(
-            "\treverse_proxy gateway:18789 {\n"
-            "\t\theader_up X-Real-IP {remote_host}\n\t}",
-            rendered,
-        )
-        self.assertIn(
-            "\treverse_proxy https://gateway:8443 {\n"
-            "\t\theader_up X-Real-IP {remote_host}\n"
-            "\t\ttransport http {\n\t\t\ttls_insecure_skip_verify\n\t\t}\n\t}",
-            rendered,
-        )
-        self.assertEqual(rendered.count("header_up X-Real-IP"), 2)
-
-    def test_caddy_real_ip_ports_reject_invalid_values(self) -> None:
-        for value in ("0", "65536", "18789,", "18789,,8443", "*", "18789\n}"):
-            with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError, "CITADEL_CADDY_REAL_IP_PORTS",
-            ):
-                render_caddyfile(
-                    {"http_services": []}, https_start="3000", spacing="1",
-                    backend="gateway", host="node.example.ts.net",
-                    real_ip_ports=value,
-                )
-
-    def test_caddy_export_zero_is_disabled_and_invalid_inputs_fail(self) -> None:
-        self.assertEqual(
-            render_caddyfile(
-                {}, https_start="0", spacing="1", backend="", host="",
-            ),
-            "# CITADEL central Caddy export is disabled.\n",
-        )
-        with self.assertRaises(ValueError):
-            render_caddyfile(
-                {"http_services": []},
-                https_start="3000",
-                spacing="1",
-                backend="bad backend",
-                host="ucore.tailb13f39.ts.net",
-            )
-        with self.assertRaises(ValueError):
-            render_caddyfile(
-                {"http_services": []},
-                https_start="3000",
-                spacing="1",
-                backend="fedora45-ai-safrano9999-ucore",
-                host="192.168.11.55",
-            )
-        with self.assertRaises(ValueError):
-            render_caddyfile(
-                {"http_services": []},
-                https_start="3000",
-                spacing="1",
-                backend="192.168.11.55",
-                host="ucore.tailb13f39.ts.net",
-            )
-
-    def test_caddy_export_respects_https_only_policy(self) -> None:
-        rendered = render_caddyfile(
-            {
-                "https_only": True,
-                "http_services": [
-                    {"port": 4000, "scheme": "http"},
-                    {"port": 4001, "scheme": "https"},
-                ],
-            },
-            https_start="3000",
-            spacing="1",
-            backend="fedora45-ai-safrano9999-ucore",
-            host="ucore.tailb13f39.ts.net",
-        )
-        self.assertNotIn(":4000", rendered)
-        self.assertIn(":4001", rendered)
-    def test_https_only_filters_routes_without_removing_discovered_http(self) -> None:
-        payload = {
-            "https_only": False,
-            "http_services": [
-                {"port": 8000, "scheme": "http"},
-                {"port": 8443, "scheme": "https"},
-            ],
-        }
-        self.assertEqual([row["port"] for row in routable_services(payload)], [8000, 8443])
-        payload["https_only"] = True
+    def test_https_only_filters_backends_without_removing_discovery(self):
+        payload = {"https_only": True, "http_services": [
+            {"port": 8080, "scheme": "http"}, {"port": 8443, "scheme": "https"}]}
         self.assertEqual([row["port"] for row in routable_services(payload)], [8443])
         self.assertEqual(len(payload["http_services"]), 2)
 
-    def test_serve_target_uses_origin_port_with_public_port_fallback(self) -> None:
-        self.assertEqual(
-            tailscale.serve_target(8443, "https"),
-            "https+insecure://127.0.0.1:8443",
-        )
-        self.assertEqual(
-            tailscale.serve_target(
-                25000,
-                "http",
-                "host.containers.internal",
-                8080,
-            ),
-            "http://host.containers.internal:8080",
-        )
+    def test_backend_port_and_protocol_are_preserved(self):
+        self.assertEqual(tailscale.serve_target(8080, "http"), "http://127.0.0.1:8080")
+        self.assertEqual(tailscale.serve_target(8443, "https"), "https+insecure://127.0.0.1:8443")
 
-    def test_common_route_record_has_shared_proxy_schema(self) -> None:
-        self.assertEqual(
-            route_record(
-                "proxy",
-                "https://node.example.ts.net:25000",
-                target="http://127.0.0.1:8080",
-                owns_listener=True,
-            ),
-            {
-                "mode": "proxy",
-                "url": "https://node.example.ts.net:25000",
-                "target": "http://127.0.0.1:8080",
-                "owns_listener": True,
-            },
-        )
+    def test_shared_route_schema_remains_compatible(self):
+        record = route_record("proxy", "https://node.example.ts.net:8080",
+                              target="http://127.0.0.1:8080", owns_listener=True)
+        self.assertEqual(record["mode"], "proxy")
+        self.assertEqual(record["url"], "https://node.example.ts.net:8080")
 
-    def test_parse_live_routes_recognizes_exact_https_and_http_proxies(self) -> None:
-        parsed = tailscale.parse_live_serve_routes({
-            "TCP": {
-                "25000": {"HTTPS": True},
-                "15000": {"HTTP": True},
-            },
-            "Web": {
-                "Node.Example.TS.NET.:25000": {
-                    "Handlers": {
-                        "/": {"Proxy": "https+insecure://127.0.0.1:9443"},
-                    },
-                },
-                "node.example.ts.net:15000": {
-                    "Handlers": {
-                        "/": {"Proxy": "http://127.0.0.1:8080"},
-                    },
-                },
-            },
-        })
+    def test_verification_requires_exact_https_frontend_and_backend(self):
+        current = route()
+        self.assertTrue(tailscale.https_route_matches(current, "node.example.ts.net", 8080, "http://127.0.0.1:8080"))
+        self.assertFalse(tailscale.https_route_matches(current, "wrong.example.ts.net", 8080, "http://127.0.0.1:8080"))
+        self.assertFalse(tailscale.https_route_matches(current, "node.example.ts.net", 8080, "https+insecure://127.0.0.1:8080"))
+        for kind in ("http", "funnel", "foreground", "extra_path", "other_authority"):
+            with self.subTest(kind=kind):
+                current = route()
+                if kind == "http":
+                    current["TCP"]["8080"] = {"HTTP": True}
+                elif kind == "funnel":
+                    current["AllowFunnel"] = {"node.example.ts.net:8080": True}
+                elif kind == "foreground":
+                    current["Foreground"] = {"session": route()}
+                elif kind == "extra_path":
+                    current["Web"]["node.example.ts.net:8080"]["Handlers"]["/extra"] = {"Text": "old"}
+                else:
+                    current["Web"]["other.example.ts.net:8080"] = {"Handlers": {}}
+                self.assertFalse(tailscale.https_route_matches(current, "node.example.ts.net", 8080, "http://127.0.0.1:8080"))
 
-        self.assertEqual(
-            parsed["25000"],
-            {
-                "public_scheme": "https",
-                "target": "https+insecure://127.0.0.1:9443",
-                "authority": "node.example.ts.net:25000",
-                "listener_type": "HTTPS",
-                "tcp_target": None,
-                "exact_tcp_handler": True,
-                "exclusive_root_proxy": True,
-                "foreground": False,
-                "funnel": False,
-            },
-        )
-        self.assertEqual(
-            parsed["15000"],
-            {
-                "public_scheme": "http",
-                "target": "http://127.0.0.1:8080",
-                "authority": "node.example.ts.net:15000",
-                "listener_type": "HTTP",
-                "tcp_target": None,
-                "exact_tcp_handler": True,
-                "exclusive_root_proxy": True,
-                "foreground": False,
-                "funnel": False,
-            },
-        )
+    def test_selected_port_removal_covers_protocols_paths_funnel_and_foreground(self):
+        current = route()
+        current["TCP"]["22"] = {"TCPForward": "127.0.0.1:22"}
+        current["Web"]["other.example.ts.net:8080"] = {"Handlers": {"/extra": {"Text": "old"}}}
+        current["AllowFunnel"] = {"node.example.ts.net:8080": True}
+        current["Foreground"] = {"old": route(), "keep": route("9090")}
+        current["Services"] = {"svc:other": {"TCP": {"8080": {"HTTP": True}}}}
+        before = copy.deepcopy(current)
+        updated = tailscale.without_ports(current, {"8080"})
+        self.assertEqual(current, before)
+        self.assertEqual(tailscale.node_ports(updated), {"22", "9090"})
+        self.assertEqual(updated["Services"], current["Services"])
+        self.assertEqual(updated["Web"], {})
+        self.assertEqual(updated["AllowFunnel"], {})
 
-    def test_parse_live_routes_preserves_raw_tcp_forward_metadata(self) -> None:
-        parsed = tailscale.parse_live_serve_routes({
-            "TCP": {"5432": {"TCPForward": "127.0.0.1:15432"}},
-        })
+    def test_remove_verifies_live_config_before_returning(self):
+        with patch.object(tailscale, "command", return_value="") as command, patch.object(tailscale, "read_live_serve", return_value=route()):
+            with self.assertRaisesRegex(ValueError, "remain configured"):
+                tailscale.remove_node_ports(route(), {"8080"})
+        self.assertEqual(command.call_args.args[0][:5], ["tailscale", "debug", "localapi", "POST", "serve-config"])
 
-        self.assertEqual(
-            parsed["5432"],
-            {
-                "public_scheme": None,
-                "target": None,
-                "authority": None,
-                "listener_type": "TCPForward",
-                "tcp_target": "127.0.0.1:15432",
-                "exact_tcp_handler": False,
-                "exclusive_root_proxy": False,
-                "foreground": False,
-                "funnel": False,
-            },
-        )
-
-    def test_multiple_web_authorities_on_one_port_are_not_exact(self) -> None:
-        parsed = tailscale.parse_live_serve_routes({
-            "TCP": {"443": {"HTTPS": True}},
-            "Web": {
-                "node.example.ts.net:443": {
-                    "Handlers": {"/": {"Proxy": "http://127.0.0.1:8080"}},
-                },
-                "other.example.ts.net:443": {
-                    "Handlers": {"/": {"Proxy": "http://127.0.0.1:8080"}},
-                },
-            },
-        })
-
-        route = parsed["443"]
-        self.assertTrue(route["exact_tcp_handler"])
-        self.assertIsNone(route["target"])
-        self.assertIsNone(route["authority"])
-        self.assertFalse(route["exclusive_root_proxy"])
-
-    def test_foreground_and_funnel_routes_are_marked_nonexclusive(self) -> None:
-        foreground = tailscale.parse_live_serve_routes({
-            "Foreground": {
-                "session-1": exact_route_payload(
-                    25000,
-                    "https",
-                    "http://127.0.0.1:8080",
-                ),
-            },
-        })["25000"]
-        self.assertEqual(foreground["public_scheme"], "https")
-        self.assertEqual(foreground["listener_type"], "HTTPS")
-        self.assertIsNone(foreground["target"])
-        self.assertFalse(foreground["exact_tcp_handler"])
-        self.assertFalse(foreground["exclusive_root_proxy"])
-        self.assertTrue(foreground["foreground"])
-
-        funnel_payload = exact_route_payload(
-            15000,
-            "http",
-            "http://127.0.0.1:8080",
-        )
-        funnel_payload["AllowFunnel"] = {"node.example.ts.net:15000": True}
-        funnel = tailscale.parse_live_serve_routes(funnel_payload)["15000"]
-        self.assertTrue(funnel["funnel"])
-        self.assertFalse(funnel["exclusive_root_proxy"])
-
-    def test_live_route_matches_requires_exact_background_ownership(self) -> None:
-        route = tailscale.parse_live_serve_routes(
-            exact_route_payload(
-                25000,
-                "https",
-                "https+insecure://127.0.0.1:9443",
-            )
-        )["25000"]
-        expected = {
-            "public_scheme": "https",
-            "target": "https+insecure://127.0.0.1:9443",
-            "authority": "NODE.EXAMPLE.TS.NET.:25000",
-        }
-
-        self.assertTrue(tailscale.live_route_matches(route, **expected))
-        for field in (
-            "exact_tcp_handler",
-            "exclusive_root_proxy",
-            "foreground",
-            "funnel",
-        ):
-            with self.subTest(field=field):
-                changed = dict(route)
-                changed[field] = not route[field]
-                self.assertFalse(tailscale.live_route_matches(changed, **expected))
-
-        mismatches = (
-            {**expected, "public_scheme": "http"},
-            {**expected, "target": "http://127.0.0.1:9443"},
-            {**expected, "authority": "other.example.ts.net:25000"},
-        )
-        for arguments in mismatches:
-            with self.subTest(arguments=arguments):
-                self.assertFalse(tailscale.live_route_matches(route, **arguments))
-        self.assertFalse(tailscale.live_route_matches(None, **expected))
-
-    def test_parse_local_listeners_extracts_ipv4_ipv6_processes_and_pids(self) -> None:
-        output = "\n".join((
-            'LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:* users:(("python3",pid=123,fd=7))',
-            'LISTEN 0 4096 [::1]:8080 [::]:* users:(("node",pid=456,fd=20))',
-            'LISTEN 0 511 [::]:9090 [::]:* users:(("nginx",pid=22,fd=5),("nginx",pid=21,fd=5))',
-            "LISTEN 0 128 0.0.0.0:10000 0.0.0.0:*",
-            "malformed line",
-        ))
-
-        self.assertEqual(
-            tailscale.parse_local_listeners(output),
-            {
-                8080: [
-                    {"address": "127.0.0.1", "process": "python3", "pid": 123},
-                    {"address": "::1", "process": "node", "pid": 456},
-                ],
-                9090: [
-                    {"address": "::", "process": "nginx", "pid": 22},
-                    {"address": "::", "process": "nginx", "pid": 21},
-                ],
-                10000: [
-                    {"address": "0.0.0.0", "process": None, "pid": None},
-                ],
-            },
-        )
+    def test_malformed_status_cannot_be_used_for_reconciliation(self):
+        for payload in ("[]", "{broken", '{"TCP":[]}'):
+            with self.subTest(payload=payload), patch.object(tailscale, "command", return_value=payload):
+                with self.assertRaises(ValueError):
+                    tailscale.read_live_serve()
 
 
 if __name__ == "__main__":

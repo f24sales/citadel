@@ -9,11 +9,32 @@ UNIT_DIR = ROOT / "image/runtime/etc/systemd/system"
 
 
 class CitadelSystemdRuntimeTests(unittest.TestCase):
-    def test_tailscale_allocator_environment_reaches_runtime_units(self) -> None:
+    def test_example_uses_one_to_one_ports_without_allocated_variants(self) -> None:
+        example = (ROOT / "config.conf_example").read_text(encoding="utf-8")
+        values = dict(
+            line.split("=", 1) for line in example.splitlines()
+            if line and not line.startswith("#") and "=" in line
+        )
+        self.assertEqual(values["CITADEL_HTTPS_ONLY"], "0")
+        self.assertEqual(values["CITADEL_HIDE_HTTP_WEBUI_DUPE"], "1")
+        self.assertNotIn("CITADEL_WEBUI_HTTPS_PORT", values)
+        self.assertEqual(values["CITADEL_PERSISTENT"], "0")
+        self.assertEqual(values["CITADEL_LOGO_PERSISTENT"], "1")
+        self.assertNotIn("CITADEL_TAILSCALE", values)
+        self.assertNotIn("CITADEL_CLOUDFLARE", values)
+        self.assertEqual(values["CITADEL_WEBUI_TRANSPORT"], "tcp")
+        self.assertEqual(values["CITADEL_WEBUI_SOCKET"], "")
+        self.assertEqual(values["CADDYFILE_START"], "")
+        self.assertEqual(values["CADDYFILE_STEPS"], "1")
+        self.assertNotIn("CITADEL_TS_DISCOVERY", values)
+
+    def test_current_environment_reaches_runtime_units(self) -> None:
         expected = {
-            "CITADEL_TAILSCALE_HTTP_START",
-            "CITADEL_TAILSCALE_HTTPS_START",
-            "CITADEL_TAILSCALE_RANGE",
+            "CITADEL_HIDE_HTTP_WEBUI_DUPE",
+            "CITADEL_LOGO_PERSISTENT",
+            "CITADEL_PERSISTENT",
+            "CADDYFILE_START",
+            "CADDYFILE_STEPS",
         }
         for name in ("citadel.service", "citadel-scan.service"):
             unit = (UNIT_DIR / name).read_text(encoding="utf-8")
@@ -21,6 +42,8 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
                 line for line in unit.splitlines() if line.startswith("PassEnvironment=")
             )
             self.assertTrue(expected.issubset(set(pass_environment.split("=")[1].split())))
+            self.assertNotIn("CITADEL_TAILSCALE", pass_environment.split())
+            self.assertNotIn("CITADEL_CLOUDFLARE", pass_environment.split())
 
     def test_scan_coalesces_duplicate_requests_without_waiting(self) -> None:
         scan = (ROOT / "scan.sh").read_text(encoding="utf-8")
@@ -32,27 +55,15 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         self.assertIn("CITADEL_USER_AGENT", scan_unit)
         self.assertIn('get("CITADEL_USER_AGENT", "")', scan)
         self.assertIn('CURL_USER_AGENT_ARGS=(--user-agent "$CITADEL_USER_AGENT_VALUE")', scan)
-        self.assertGreaterEqual(scan.count('"${CURL_USER_AGENT_ARGS[@]}"'), 6)
-        self.assertIn("CITADEL_CLEAR_TAILSCALE=0", example)
-        self.assertIn("CITADEL_CLEAR_TAILSCALE", scan_unit)
-        self.assertIn('[[ "$CLEAR_TAILSCALE_VALUE" == "1" ]]', scan)
-        self.assertIn("tailscale serve reset", scan)
-        self.assertIn('atomic_write_json(path, {})', scan)
-        self.assertIn('DISPATCH_STRICT=(--strict)', scan)
-        for key in (
-            "CITADEL_CADDY_HTTPS_START",
-            "CITADEL_CADDY_RANGE",
-            "CITADEL_CADDY_BACKEND",
-            "CITADEL_CADDY_HOST",
-            "CITADEL_CADDY_REAL_IP_PORTS",
-        ):
-            self.assertIn(key, example)
-            self.assertIn(key, scan_unit)
-        self.assertIn('"$FUNCTIONS_DIR/caddy_export.py"', scan)
+        self.assertGreaterEqual(scan.count('"${CURL_USER_AGENT_ARGS[@]}"'), 5)
+        self.assertIn('--user-agent "$CITADEL_USER_AGENT_VALUE"', scan)
         self.assertIn("if https_only_raw != 'true' or scheme == 'https'", scan)
         self.assertIn("flock --nonblock", scan)
         self.assertNotIn("CITADEL_SCAN_LOCK_TIMEOUT", scan)
         self.assertNotIn("flock --wait", scan)
+        self.assertNotIn("tailscale serve reset", scan)
+        for name in ("CONTAINER", "DEDUPE_PORT", "CLEAR_TAILSCALE", "TAILSCALE_DEFAULT", "TAILSCALE_HTTP_START", "TAILSCALE_HTTPS_START", "TAILSCALE_RANGE", "CADDY_HTTPS_START", "TS_DISCOVERY"):
+            self.assertNotIn("CITADEL_" + name, example + scan + scan_unit)
 
     def test_scan_has_only_optional_ordering_for_runtime_services(self) -> None:
         unit = (UNIT_DIR / "citadel-scan.service").read_text(encoding="utf-8")

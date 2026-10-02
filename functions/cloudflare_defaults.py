@@ -23,16 +23,17 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def cloudflare_ready(root: Path) -> tuple[bool, str]:
-    if not (root / "extensions" / "enabled" / "cloudflare").is_dir():
+    provider_dir = root / "extensions" / "enabled" / "cloudflare"
+    if not provider_dir.is_dir():
+        return False, "provider is disabled"
+    manifest = read_json(provider_dir / "extension.json", {})
+    if not isinstance(manifest, dict) or manifest.get("enabled") is False:
         return False, "provider is disabled"
 
     sys.path.insert(0, str(root))
     os.chdir(root)
     get = importlib.import_module("python_header").get
-    if str(get("CITADEL_CLOUDFLARE", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
-        return False, "CITADEL_CLOUDFLARE is not 1"
-
-    token = get("CLOUDFLARE_API_TOKEN", "")
+    token = get("CLOUDFLARE_API_TOKEN", "").strip()
     if not token:
         return False, "CLOUDFLARE_API_TOKEN is missing"
 
@@ -82,16 +83,12 @@ def normalize_emails_csv(value: str) -> list[str]:
 def http_ports(services_file: Path) -> list[str]:
     services = read_json(services_file, {"http_services": []})
     rows = routable_services(services)
-    rows.extend(routable_services(services, "host_http_services"))
     ports: list[str] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         try:
-            if row.get("origin") == "host":
-                port = int(str(row.get("route_port") or ""))
-            else:
-                port = int(str(row.get("port") or ""))
+            port = int(str(row.get("port") or ""))
         except ValueError:
             continue
         if 1 <= port <= 65535 and str(port) not in ports:

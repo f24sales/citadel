@@ -1,7 +1,11 @@
 """CITADEL FastAPI WebUI."""
 
+import argparse
 import hmac
 import json
+import secrets
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -15,11 +19,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from starlette.datastructures import MutableHeaders
+from starlette.types import Message, Receive, Scope, Send
 
 from python_header import get, get_port  # noqa: F401
 
 import core
 import health
+from webui_transport import bind_unix_socket, unix_socket_path
 
 
 class EditTokenGuard:
@@ -114,7 +121,23 @@ def _require_edit_token(request: Request, supplied: str) -> None:
     raise HTTPException(status_code=401, detail="Invalid token.")
 
 
-app = FastAPI()
+_instance_id = secrets.token_hex(16)
+
+
+class InstanceIdentifiedFastAPI(FastAPI):
+    """Identify this process on every HTTP response, including unhandled 500s."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def identify_response(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Citadel-Instance"] = _instance_id
+            await send(message)
+
+        # Wrap the complete middleware stack, including ServerErrorMiddleware.
+        await super().__call__(scope, receive, identify_response)
+
+
+app = InstanceIdentifiedFastAPI()
 _jinja = Environment(
     loader=FileSystemLoader(str(core.BASE_DIR / "templates")),
     autoescape=select_autoescape(["html", "xml"]),
@@ -207,6 +230,41 @@ async def authorize_cloudflare_edit(request: Request):
     return {"ok": True}
 
 
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--wait-ready", metavar="PROGRAM",
+        help="use PROGRAM to wait for the configured TCP or Unix listener",
+    )
+    arguments = parser.parse_args(argv)
+    try:
+        path = unix_socket_path()
+        if path is None:
+            host, port = core.load_server_config()
+        if arguments.wait_ready:
+            if path is None:
+                probe_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+                target = ["tcp", probe_host, str(port)]
+            else:
+                target = ["unix", str(path)]
+            return subprocess.run(
+                [arguments.wait_ready, "--timeout", "60", *target], check=False,
+            ).returncode
+        if path is None:
+            uvicorn.run(app, host=host, port=port)
+        else:
+            with bind_unix_socket(path) as listener:
+                # Uvicorn re-raises SIGTERM after graceful shutdown. Let Python
+                # unwind the socket context instead of immediately terminating.
+                previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+                try:
+                    uvicorn.run(app, fd=listener.fileno())
+                finally:
+                    signal.signal(signal.SIGTERM, previous)
+    except (ValueError, OSError) as exc:
+        parser.exit(2, f"CITADEL WebUI: {exc}\n")
+    return 0
+
+
 if __name__ == "__main__":
-    host, port = core.load_server_config()
-    uvicorn.run(app, host=host, port=port)
+    sys.exit(main())

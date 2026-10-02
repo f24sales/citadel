@@ -1,0 +1,8 @@
+{
+  "id": "caddy",
+  "label": "Caddyfile",
+  "kind": "export",
+  "enabled": true,
+  "provider": "caddy",
+  "version": 1
+}

@@ -41,13 +41,13 @@ python3 skills/citadel-cloudflare/scripts/discover.py \
 
 Do not commit either token.
 
-When `CITADEL_CLOUDFLARE=1`, CITADEL reconciles the configured Cloudflare routes. The container's systemd configuration exclusively owns `cloudflared.service`; CITADEL never starts, stops, or installs the connector.
+When the extension is in `extensions/enabled/cloudflare`, its manifest is enabled, and `CLOUDFLARE_API_TOKEN` is configured and verified, CITADEL reconciles Cloudflare routes. There is no separate environment activation switch. The container's systemd configuration exclusively owns `cloudflared.service`; CITADEL never starts, stops, or installs the connector.
 
 After the provider nameserver change, the agent owns every remaining setup action: account/zone/Tunnel discovery, Access initialization, One-time PIN, DNS records, Tunnel ingress, configuration files, connector token, and verification. Do not send the user through Cloudflare dashboard pages for resources the API token can manage.
 
 ## Activate routing
 
-Verify all conditions before setting `CITADEL_CLOUDFLARE=true`:
+Verify all conditions before running the enabled extension:
 
 - The selected Tunnel is the intended Tunnel for this host.
 - The API token can read the zone and edit DNS, Tunnel config, and Access apps/policies.
@@ -75,4 +75,4 @@ The WebUI writes `ports.filter.json` and immediately runs `scan.sh` to perform t
 
 ## Preserve ownership boundaries
 
-Modify only resources whose IDs or hostnames are recorded in the Cloudflare provider state. Preserve foreign Tunnel ingress rules, DNS records, Access applications, and policies. Keep the catch-all ingress rule last. When Cloudflare is disabled, remove previously managed CITADEL resources if valid credentials remain available.
+Modify only resources whose IDs or hostnames are recorded in the Cloudflare provider state. Preserve foreign Tunnel ingress rules, DNS records, Access applications, and policies. Keep the catch-all ingress rule last. Moving the extension to disabled or removing its token skips reconciliation; it does not authorize deleting existing remote resources. Decommission resources separately when requested.

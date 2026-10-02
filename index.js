@@ -11,9 +11,7 @@ const coreBridge = path.join(pluginRoot, "functions", "plugin_bridge.py");
 const providerNames = new Set([
   "localhost",
   "subnet",
-  "tailscale-default",
-  "tailscale-http",
-  "tailscale-https",
+  "tailscale",
   "cloudflare",
   "other",
 ]);
@@ -533,7 +531,7 @@ async function handleCommand(ctx, api) {
   }
   if (!providerNames.has(action)) {
     return {
-      text: "Usage: /citadel [localhost|subnet|tailscale-default|tailscale-http|tailscale-https|cloudflare|other|scan]",
+      text: "Usage: /citadel [localhost|subnet|tailscale|cloudflare|other|scan]",
     };
   }
   return createProviderReply(data, action);
