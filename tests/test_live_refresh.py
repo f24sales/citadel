@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr
+import errno
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -50,6 +53,11 @@ class LiveRefreshTests(unittest.TestCase):
             self.assertEqual(kwargs["timeout"], 90)
             self.assertIn("--depth", command)
             shutil.copytree(self.seed, Path(command[-1]))
+        if command[0] == "/usr/bin/mv":
+            # The only real subprocess here moves our isolated fixture trees.
+            for value in command[-2:]:
+                self.assertTrue(Path(value).is_relative_to(self.root))
+            return subprocess.run(command, check=True, capture_output=True, timeout=10)
         return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
 
     def execute(self, state="inactive"):
@@ -147,16 +155,79 @@ class LiveRefreshTests(unittest.TestCase):
                 self.execute()
         self.assertFalse(any(c[1:2] == ["stop"] for c in self.calls))
 
-    def test_second_rename_failure_restores_original(self):
+    def test_install_move_failure_restores_original(self):
         (self.old / "original").write_text("keep")
-        rename = Path.rename
+        move = refresh.move_tree
         def fail_checkout(path, target):
             if path.name == "checkout":
-                raise OSError("injected rename failure")
-            return rename(path, target)
-        with patch.object(Path, "rename", fail_checkout), self.assertRaises(OSError):
+                raise OSError("injected move failure")
+            return move(path, target)
+        with patch.object(refresh, "move_tree", fail_checkout), self.assertRaises(OSError):
             self.execute()
         self.assertEqual((self.old / "original").read_text(), "keep")
+
+    def reveal_lowerdir_after_backup(self, move):
+        def simulated_move(source, target):
+            move(source, target)
+            if source == self.old and target.parent.name.startswith(".CITADEL-backup-"):
+                # fuse-overlayfs can expose image contents after moving an
+                # upper-only tree away from the same pathname.
+                self.old.mkdir()
+                (self.old / "image-original").write_text("preserve lowerdir")
+        return simulated_move
+
+    def test_reappearing_lowerdir_is_archived_before_install(self):
+        self.args.live = True
+        move = self.reveal_lowerdir_after_backup(refresh.move_tree)
+        with patch.object(refresh, "move_tree", side_effect=move):
+            # No Path.rename fallback may reintroduce EXDEV for source swaps.
+            with patch.object(Path, "rename", side_effect=OSError(errno.EXDEV, "overlay rename")):
+                self.execute("active")
+        self.assertEqual((self.old / "webui.py").read_text(), "{}\n")
+        backup = next(self.root.glob(".CITADEL-backup-*/tree"))
+        lower = next(self.root.glob(".CITADEL-image-fallback-*/tree"))
+        self.assertEqual((backup / "webui.py").read_text(), "# old WebUI\n")
+        self.assertEqual((lower / "image-original").read_text(), "preserve lowerdir")
+        self.assertIn(["systemctl", "restart", "citadel.service"], self.calls)
+
+    def test_lowerdir_and_failed_install_are_preserved_during_rollback(self):
+        self.args.live = True
+        move = self.reveal_lowerdir_after_backup(refresh.move_tree)
+        def fail_install(source, target):
+            if source.name == "checkout":
+                target.mkdir()
+                (target / "partial-install").write_text("preserve partial tree")
+                raise OSError(errno.ENOTEMPTY, "injected incomplete install")
+            return move(source, target)
+        with patch.object(refresh, "move_tree", side_effect=fail_install), self.assertRaises(OSError):
+            self.execute("active")
+        self.assertEqual((self.old / "webui.py").read_text(), "# old WebUI\n")
+        lower = next(self.root.glob(".CITADEL-image-fallback-*/tree"))
+        failed = next(self.root.glob(".CITADEL-failed-*/tree"))
+        self.assertTrue((lower / "image-original").exists())
+        self.assertTrue((failed / "partial-install").exists())
+        self.assertIn(["systemctl", "start", "citadel.service"], self.calls)
+
+    def test_failed_backup_move_does_not_replace_original_with_partial_backup(self):
+        self.args.live = True
+        def fail_backup(source, target):
+            target.mkdir()
+            (target / "partial-backup").write_text("retained")
+            raise OSError(errno.EXDEV, "injected backup failure")
+        with patch.object(refresh, "move_tree", side_effect=fail_backup), self.assertRaises(OSError):
+            self.execute("active")
+        self.assertEqual((self.old / "webui.py").read_text(), "# old WebUI\n")
+        self.assertEqual(len(list(self.root.glob(".CITADEL-backup-*/tree/partial-backup"))), 1)
+        self.assertIn(["systemctl", "start", "citadel.service"], self.calls)
+
+    def test_move_refuses_occupied_destination_without_merging(self):
+        target = self.root / "occupied"
+        target.mkdir()
+        (target / "user-file").write_text("keep")
+        with self.assertRaisesRegex(RuntimeError, "occupied destination"):
+            refresh.move_tree(self.old, target)
+        self.assertEqual((target / "user-file").read_text(), "keep")
+        self.assertTrue((self.old / "webui.py").exists())
 
     def test_aligned_config_keeps_unrelated_values_and_is_idempotent(self):
         text = "# comment\nCUSTOM=quoted value\nexport CITADEL_PERSISTENT=1\nCITADEL_PERSISTENT=1\n"

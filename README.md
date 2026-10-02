@@ -457,6 +457,17 @@ loopback; Serve's local `https+insecure` target accepts their local certificates
 The **public** certificate is the official node certificate managed and renewed
 by Tailscale Serve. Citadel does not generate or copy certificate keys.
 
+**Restart constraint on TUN-mode nodes:** bind backends to explicit non-Tailscale
+addresses, not `0.0.0.0` or `[::]`, when Serve uses the same port. Peer HTTPS can
+work while a wildcard backend is running, but after it stops, tailscaled can
+claim the Tailscale-IP listener and prevent that backend from restarting with
+`EADDRINUSE`. This also applies to wildcard Podman-published ports. A successful
+peer probe or index health result does not prove restart safety.
+[Tailscale's local listener implementation](https://github.com/tailscale/tailscale/blob/v1.98.8/ipn/ipnlocal/serve.go#L104-L113)
+explains the separate host-level listener. Userspace networking avoids those
+listeners but changes normal tailnet networking; choose that mode deliberately.
+Citadel does not silently change daemon modes or rebind unrelated services.
+
 The port filter and `CITADEL_HTTPS_ONLY` still decide which local services enter
 the scan; the latter filters locally HTTP-speaking backends, not the public
 Tailscale scheme. A failed reset stops reconstruction; failed route applications

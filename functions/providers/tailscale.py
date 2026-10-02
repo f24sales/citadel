@@ -236,8 +236,9 @@ def main() -> int:
                     if not https_route_matches(live, domain, port, target):
                         if key in node_ports(live):
                             live = remove_node_ports(live, {key})
-                        # Peer Serve is intercepted before the host kernel, so
-                        # wildcard app bindings do not prevent same-port HTTPS.
+                        # Peer Serve is intercepted before the host kernel.
+                        # On TUN nodes, its additional local listener can block
+                        # a wildcard backend on restart; see deployment notes.
                         command(["tailscale", "serve", "--bg", "--yes", f"--https={port}", target])
                         live = read_live_serve()
                     if not https_route_matches(live, domain, port, target):

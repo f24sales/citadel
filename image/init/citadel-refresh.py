@@ -69,6 +69,73 @@ def copy_entry(source, target):
         shutil.copy2(source, target)
 
 
+def retained_tree(source, label, retained):
+    """Reserve a unique backup outside the temporary clone cleanup scope."""
+    directory = Path(tempfile.mkdtemp(prefix=f".{source.name}-{label}-", dir=source.parent))
+    target = directory / "tree"
+    retained.append(target)
+    return target
+
+
+def move_tree(source, target):
+    """GNU mv handles overlay EXDEV via copy/remove, retaining symlink targets.
+
+    A successful move can expose an image lowerdir at source. Callers must
+    check that path separately; never treat it as an empty destination.
+    """
+    if exists(target):
+        raise RuntimeError("Refusing to move a tree onto an occupied destination")
+    run(["/usr/bin/mv", "-T", "--", str(source), str(target)], timeout=90)
+    if not exists(target):
+        raise RuntimeError("Tree move returned without creating its destination")
+
+
+def vacate_tree(source, label, retained):
+    """Archive revealed lowerdirs/partial installs instead of deleting them."""
+    for _ in range(4):
+        if not exists(source):
+            return
+        move_tree(source, retained_tree(source, label, retained))
+    if exists(source):
+        raise RuntimeError("Source remains occupied after preserving overlay trees")
+
+
+def restore_tree(source, backup, retained):
+    vacate_tree(source, "failed", retained)
+    move_tree(backup, source)
+
+
+def rollback(source, backup, retained, saved_units, restart_attempted, stopped):
+    """Attempt every recovery step even when an earlier recovery step fails."""
+    failures = []
+
+    def attempt(label, action):
+        try:
+            action()
+        except BaseException as exc:
+            # Log operation/type only: subprocess arguments/output may be secret.
+            failures.append(f"{label}: {type(exc).__name__}")
+
+    if restart_attempted:
+        attempt("stop new WebUI", lambda: run(["systemctl", "stop", "citadel.service"], timeout=90))
+    if backup is not None:
+        attempt("restore source tree", lambda: restore_tree(source, backup, retained))
+    for target, previous, mode in reversed(saved_units):
+        if previous is None:
+            attempt(f"remove new {target.name}", lambda target=target: target.unlink(missing_ok=True))
+        else:
+            attempt(f"restore {target.name}", lambda target=target, previous=previous, mode=mode:
+                    atomic_write(target, previous, mode))
+    attempt("daemon-reload", lambda: run(["systemctl", "daemon-reload"]))
+    if stopped:
+        attempt("start previous WebUI", lambda: run(["systemctl", "start", "citadel.service"], timeout=90))
+    if failures:
+        print("CITADEL rollback incomplete: " + "; ".join(failures), file=sys.stderr)
+    for path in retained:
+        if exists(path):
+            print(f"CITADEL retained tree: {path}", file=sys.stderr)
+
+
 def aligned_config(text, settings=None):
     settings = SETTINGS if settings is None else settings
     lines = []
@@ -259,6 +326,7 @@ def refresh(args):
                 if running and not args.live:
                     raise RuntimeError("Boot refresh found a running WebUI; fix boot ordering or use --live")
                 backup = None
+                retained = []
                 stopped = False
                 restart_attempted = False
                 saved_units = []
@@ -270,35 +338,24 @@ def refresh(args):
                     prepare_tree(source, staged, export_dir, settings, export_content)
                     export_dir.mkdir(parents=True, exist_ok=True)
                     if not same_installation(source, staged):
-                        backup = source.with_name(f".{source.name}-backup-{time.time_ns()}")
-                        source.rename(backup)
-                        try:
-                            staged.rename(source)
-                        except BaseException:
-                            backup.rename(source)
-                            backup = None
-                            raise
+                        candidate = retained_tree(source, "backup", retained)
+                        move_tree(source, candidate)
+                        # Only a completed move is eligible as a restore source.
+                        backup = candidate
+                        vacate_tree(source, "image-fallback", retained)
+                        move_tree(staged, source)
                     install_units(source, args.unit_dir, saved_units, dropin)
                     run(["systemctl", "daemon-reload"])
                     if args.live:
                         restart_attempted = True
                         run(["systemctl", "restart", "citadel.service"], timeout=90)
                 except BaseException:
-                    if restart_attempted:
-                        run(["systemctl", "stop", "citadel.service"], timeout=90)
-                    for target, previous, mode in reversed(saved_units):
-                        if previous is None:
-                            target.unlink(missing_ok=True)
-                        else:
-                            atomic_write(target, previous, mode)
-                    if backup is not None:
-                        source.rename(source.with_name(f".{source.name}-failed-{time.time_ns()}"))
-                        backup.rename(source)
-                    run(["systemctl", "daemon-reload"])
-                    if stopped:
-                        run(["systemctl", "start", "citadel.service"], timeout=90)
+                    rollback(source, backup, retained, saved_units, restart_attempted, stopped)
                     raise
                 print("CITADEL refresh complete" + (f"; retained backup: {backup}" if backup else "; code unchanged"))
+                for path in retained:
+                    if path != backup and exists(path):
+                        print(f"CITADEL retained overlay tree: {path}")
 
 
 def main(argv=None):
