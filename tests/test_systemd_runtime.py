@@ -97,6 +97,16 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         self.assertIn("After=network.target persistainer.service", unit)
         self.assertIn("fedora45-wait-ready", unit)
 
+    def test_cascade_python_can_import_its_system_wide_pip_dependencies(self) -> None:
+        unit = (UNIT_DIR / "citadel.service").read_text(encoding="utf-8")
+        commands = [line.split("=", 1)[1] for line in unit.splitlines()
+                    if line.startswith(("ExecStart=", "ExecStartPost="))]
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertTrue(command.startswith("/usr/bin/python3 webui.py"))
+            self.assertNotIn(" -s ", command)
+            self.assertNotIn(".venv", command)
+
     def test_webui_does_not_own_cloudflared_service(self) -> None:
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         self.assertNotIn("cloudflared_service", webui)
