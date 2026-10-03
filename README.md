@@ -338,7 +338,7 @@ Configure the addresses visible **from Caddy** in
 
 ```json
 {
-  "backend": "fedora44-ai-safrano9999-ucore",
+  "backend": "ucore",
   "hosts": ["ucore.tailbab54f.ts.net"]
 }
 ```
