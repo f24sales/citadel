@@ -43,16 +43,17 @@ CITADEL_CLOUDFLARE_TUNNEL_ID=
 CITADEL_SUBNET_IP=
 ```
 
-When `CITADEL_SUBNET_IP` is set, Cloudflare uses it as the origin host. When it is blank, the origin defaults to `127.0.0.1`.
+Cloudflare always targets `127.0.0.1` on the discovered service's original port.
+`CITADEL_SUBNET_IP` controls only the separate subnet provider.
 
 Store secrets in `.env`:
 
 ```ini
 CLOUDFLARE_API_TOKEN=
-TUNNEL_TOKEN=
+CLOUDFLARE_TUNNEL_TOKEN=
 ```
 
 Activation is controlled by the extension's enabled directory/manifest and
 the presence of `CLOUDFLARE_API_TOKEN`, not a separate environment toggle.
 
-`TUNNEL_TOKEN` belongs to the systemd-managed `cloudflared.service`. CITADEL reconciles routes but never starts, stops, installs, or otherwise owns the connector service.
+`CLOUDFLARE_TUNNEL_TOKEN` belongs to the systemd-managed `cloudflared.service`. CITADEL reconciles routes but never starts, stops, installs, or otherwise owns the connector service.

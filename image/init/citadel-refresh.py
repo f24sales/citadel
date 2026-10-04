@@ -26,7 +26,7 @@ import time
 SETTINGS = {
     "CADDYFILE_START": "4000",
     "CADDYFILE_STEPS": "1",
-    "CITADEL_PERSISTENT": "0",
+    "CITADEL_TAILSCALE_SERVE": "1",
     "CITADEL_LOGO_PERSISTENT": "1",
     "CITADEL_HIDE_HTTP_WEBUI_DUPE": "1",
 }
@@ -34,6 +34,7 @@ UNITS = ("citadel.service", "citadel-scan.service")
 # Remove retired settings at the final service-environment stage: the image's
 # global PassEnvironment generator otherwise adds them back to every service.
 RETIRED = (
+    "CITADEL_PERSISTENT",
     "CITADEL_WEBUI_HTTPS_PORT", "CITADEL_CADDY_BACKEND", "CITADEL_CADDY_HOST",
     "CITADEL_CADDY_HTTPS_START", "CITADEL_CADDY_RANGE", "CITADEL_CADDY_REAL_IP_PORTS",
     "CITADEL_CONTAINER", "CITADEL_CONTAINER_MAP", "CITADEL_DEDUPE_PORT",

@@ -171,7 +171,7 @@ def main() -> int:
             "tunnel_connections": len(api.tunnel_connections(account_id, tunnel_id)),
         }
         if args.include_tunnel_token or args.write_env is not None:
-            result["TUNNEL_TOKEN"] = api.tunnel_token(account_id, tunnel_id)
+            result["CLOUDFLARE_TUNNEL_TOKEN"] = api.tunnel_token(account_id, tunnel_id)
 
         if args.write_config is not None:
             update_key_values(
@@ -190,13 +190,13 @@ def main() -> int:
         if args.write_env is not None:
             update_key_values(
                 args.write_env,
-                {"TUNNEL_TOKEN": result["TUNNEL_TOKEN"]},
+                {"CLOUDFLARE_TUNNEL_TOKEN": result["CLOUDFLARE_TUNNEL_TOKEN"]},
                 secret=True,
             )
 
         public_result = dict(result)
-        if "TUNNEL_TOKEN" in public_result and args.write_env is not None:
-            public_result["TUNNEL_TOKEN"] = "<written>"
+        if "CLOUDFLARE_TUNNEL_TOKEN" in public_result and args.write_env is not None:
+            public_result["CLOUDFLARE_TUNNEL_TOKEN"] = "<written>"
         print(json.dumps(public_result, indent=2))
         return 0
     except (CloudflareAPIError, ValueError) as exc:

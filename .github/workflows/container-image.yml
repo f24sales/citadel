@@ -1,0 +1,98 @@
+# Source of truth: SCRIPTS/githubactions. Generated copies are overwritten.
+name: Citadel Alpine image
+
+on:
+  push:
+    tags: ["20*.*.*"]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "YYYY.MM.N; empty selects the next monthly number"
+        type: string
+        default: ""
+
+concurrency:
+  group: citadel-container-image
+  cancel-in-progress: false
+
+jobs:
+  build-test-push:
+    if: github.repository_owner == 'safrano9999'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+      IMAGE: ghcr.io/safrano9999/citadel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Test sources
+        run: |
+          python -m pip install -r requirements.txt
+          python -m unittest discover -s tests
+
+      - name: Resolve immutable monthly version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.image_tag }}
+        run: |
+          version="$(python .github/scripts/resolve-image-tag.py)"
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build on GitHub Actions
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: .github/scripts/Containerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+
+      - name: Smoke-test TCP, Unix socket and optional state
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
+        run: bash .github/scripts/smoke-image.sh
+
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publish tested image
+        env:
+          IMAGE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          docker push "$IMAGE:$IMAGE_TAG"
+          docker push "$IMAGE:latest"
+
+      - name: Verify public package visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility="$(gh api users/safrano9999/packages/container/citadel --jq .visibility)"
+          if [ "$visibility" != public ]; then
+            echo "::warning::GHCR defaults to private. Set citadel Package settings > Change visibility > Public once."
+            echo 'Image pushed, but PUBLIC RELEASE PENDING: https://github.com/users/safrano9999/packages/container/citadel/settings' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo 'Public image: `${{ env.IMAGE }}:${{ steps.version.outputs.tag }}` and `:latest`' >> "$GITHUB_STEP_SUMMARY"

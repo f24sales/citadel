@@ -19,7 +19,8 @@ DOMAIN = "node.example.ts.net"
 
 
 def status(state="Running"):
-    return {"BackendState": state, "CertDomains": [DOMAIN], "Self": {"DNSName": DOMAIN + "."}}
+    return {"BackendState": state, "CertDomains": [DOMAIN],
+            "Self": {"DNSName": DOMAIN + ".", "TailscaleIPs": ["100.100.100.1"]}}
 
 
 def live_route(port=5800, scheme="https", target=None):
@@ -53,9 +54,9 @@ class TailscaleProviderTests(unittest.TestCase):
     def discover(self, rows, https_only=False):
         self.services.write_text(json.dumps({"http_services": rows, "https_only": https_only}))
 
-    def run_provider(self, *, persistent=None, live=None, statuses=None, startup_error=None,
+    def run_provider(self, *, serve=None, live=None, statuses=None, startup_error=None,
                      reset_error=False, reset_ignored=False, apply_fail=(), unconfirmed=(),
-                     post_fail=False, serve_status=None, cli=True, expect_rc=0):
+                     post_fail=False, serve_status=None, cli=True, expect_rc=0, direct_fail=False):
         self.commands = []
         self.live = copy.deepcopy(live or {})
         pending = list(statuses or [status()])
@@ -67,7 +68,14 @@ class TailscaleProviderTests(unittest.TestCase):
             self.assertLessEqual(kwargs["timeout"], 15)
             output = ""
             error = ""
-            if args == ["tailscale", "status", "--json"]:
+            if args[0] == "curl":
+                self.assertNotIn("-k", args)
+                self.assertNotIn("--insecure", args)
+                self.assertIn("--resolve", args)
+                self.assertIn("--noproxy", args)
+                output = "401"
+                error = "TLS certificate verification failed" if direct_fail else ""
+            elif args == ["tailscale", "status", "--json"]:
                 response = pending.pop(0) if len(pending) > 1 else pending[0]
                 if response is None:
                     error = "daemon unavailable"
@@ -104,8 +112,8 @@ class TailscaleProviderTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, bool(error), output, error)
 
         def value(_directory, key, default=""):
-            self.assertEqual(key, "CITADEL_PERSISTENT")
-            return default if persistent is None else str(persistent)
+            self.assertEqual(key, "CITADEL_TAILSCALE_SERVE")
+            return default if serve is None else str(serve)
 
         argv = ["tailscale.py", "--provider-dir", str(self.provider),
                 "--services-file", str(self.services), "--cache-dir", str(self.cache),
@@ -123,7 +131,7 @@ class TailscaleProviderTests(unittest.TestCase):
 
     def mutations(self):
         return [cmd for cmd in self.commands
-                if cmd not in (["tailscale", "status", "--json"], ["tailscale", "serve", "status", "--json"])]
+                if cmd[0] != "curl" and cmd not in (["tailscale", "status", "--json"], ["tailscale", "serve", "status", "--json"])]
 
     def test_default_resets_all_routes_then_builds_same_port_https(self):
         self.discover([service(11000), service(2000, "https", "*")])
@@ -137,7 +145,8 @@ class TailscaleProviderTests(unittest.TestCase):
         self.assertEqual(set(payload["services"]), {"2000", "11000"})
         self.assertTrue(all(route["url"].startswith("https://") and route["mode"] == "proxy"
                             for route in payload["services"].values()))
-        self.assertFalse(payload["persistent"])
+        self.assertTrue(payload["serve_enabled"])
+        self.assertNotIn("persistent", payload)
         self.assertNotIn("managed_routes", payload)
         self.assertNotIn("serve_routes", payload)
 
@@ -189,49 +198,59 @@ class TailscaleProviderTests(unittest.TestCase):
         self.assertEqual(self.mutations(), [["tailscale", "serve", "reset"]])
         self.assertEqual(payload["services"], {})
 
-    def test_persistent_matching_https_is_unchanged(self):
-        payload = self.run_provider(persistent=1, live=live_route(11000))
-        self.assertEqual(self.mutations(), [])
-        self.assertEqual(payload["services"]["11000"]["url"], f"https://{DOMAIN}:11000")
-
-    def test_persistent_retains_unobserved_routes_without_advertising_them(self):
-        live = live_route(5800)
-        payload = self.run_provider(persistent=1, live=live)
-        self.assertEqual(tailscale.node_ports(self.live), {"5800", "11000"})
-        self.assertEqual(set(payload["services"]), {"11000"})
-        self.assertFalse(any(cmd[-1] == "reset" for cmd in self.commands))
-
-    def test_persistent_empty_discovery_retains_live_configuration(self):
-        self.discover([])
-        initial = live_route()
-        payload = self.run_provider(persistent=1, live=initial)
+    def test_serve_off_only_publishes_verified_direct_https_without_touching_serve(self):
+        self.discover([service(3005, "https", "*"), service(5800)])
+        initial = live_route(11000)
+        payload = self.run_provider(serve=0, live=initial)
+        self.assertFalse(payload["serve_enabled"])
+        self.assertEqual(payload["services"], {"3005": {
+            "mode": "direct", "url": f"https://{DOMAIN}:3005", "target": None, "owns_listener": False}})
         self.assertEqual(self.live, initial)
         self.assertEqual(self.mutations(), [])
-        self.assertEqual(payload["services"], {})
+        self.assertFalse(any("serve" in cmd or "serve-config" in cmd for cmd in self.commands))
+        curl = next(cmd for cmd in self.commands if cmd[0] == "curl")
+        self.assertIn(f"{DOMAIN}:3005:100.100.100.1", curl)
 
-    def test_persistent_replaces_conflicting_port_without_ownership(self):
-        for kind in ("http", "target", "paths", "funnel", "tcp", "foreground"):
-            with self.subTest(kind=kind):
-                live = live_route(11000, "http" if kind == "http" else "https")
-                if kind == "target":
-                    live["Web"][f"{DOMAIN}:11000"]["Handlers"]["/"]["Proxy"] = "http://127.0.0.1:9999"
-                elif kind == "paths":
-                    live["Web"][f"{DOMAIN}:11000"]["Handlers"]["/extra"] = {"Text": "old"}
-                elif kind == "funnel":
-                    live["AllowFunnel"] = {f"{DOMAIN}:11000": True}
-                elif kind == "tcp":
-                    live = {"TCP": {"11000": {"TCPForward": "127.0.0.1:22"}}}
-                elif kind == "foreground":
-                    live = {"Foreground": {"session": live}}
-                payload = self.run_provider(persistent=1, live=live)
-                self.assertEqual(len(self.mutations()), 2)
-                self.assertEqual(self.mutations()[0][1:5], ["debug", "localapi", "POST", "serve-config"])
-                self.assertEqual(payload["services"]["11000"]["url"], f"https://{DOMAIN}:11000")
-
-    def test_persistent_removal_failure_does_not_apply_or_publish(self):
-        payload = self.run_provider(persistent=1, live=live_route(11000, "http"), post_fail=True, expect_rc=1)
-        self.assertEqual(len(self.mutations()), 1)
+    def test_serve_off_does_not_advertise_failed_https_or_stale_http_links(self):
+        row = service(3005, "https")
+        row["urls"]["tailscale"] = "https://old.example:3005"
+        self.discover([row])
+        payload = self.run_provider(serve=0, direct_fail=True)
         self.assertEqual(payload["services"], {})
+        self.assertIn("TLS certificate", payload["skipped"]["3005"])
+        self.assertEqual(payload["errors"], [])
+        self.assertNotIn("tailscale", json.loads(self.services.read_text())["http_services"][0]["urls"])
+        self.assertEqual(self.mutations(), [])
+
+    def test_serve_off_with_empty_scan_never_reads_or_changes_serve(self):
+        self.discover([])
+        initial = live_route()
+        self.run_provider(serve=0, live=initial)
+        self.assertEqual(self.commands, [["tailscale", "status", "--json"]])
+        self.assertEqual(self.live, initial)
+
+    def test_direct_https_does_not_require_serve_certificate_configuration(self):
+        self.discover([service(3005, "https")])
+        info = status()
+        info["CertDomains"] = []
+        self.assertTrue(self.run_provider(serve=0, statuses=[info])["available"])
+
+    def test_direct_https_ipv6_is_pinned_to_the_node_address(self):
+        self.discover([service(3005, "https")])
+        info = status()
+        info["Self"]["TailscaleIPs"] = ["fd7a:115c:a1e0::1"]
+        self.run_provider(serve=0, statuses=[info])
+        curl = next(cmd for cmd in self.commands if cmd[0] == "curl")
+        self.assertIn(f"{DOMAIN}:3005:[fd7a:115c:a1e0::1]", curl)
+
+    def test_direct_https_without_node_address_does_not_invent_links(self):
+        self.discover([service(3005, "https")])
+        info = status()
+        info["Self"]["TailscaleIPs"] = []
+        payload = self.run_provider(serve=0, statuses=[info])
+        self.assertEqual(payload["services"], {})
+        self.assertIn("no Tailscale IP", payload["skipped"]["3005"])
+        self.assertEqual(self.commands, [["tailscale", "status", "--json"]])
 
     def test_old_state_is_not_input_or_ownership_ledger(self):
         self.state.write_text("{broken")
@@ -261,15 +280,15 @@ class TailscaleProviderTests(unittest.TestCase):
                 self.run_provider(expect_rc=1)
                 self.assertEqual(self.commands, [])
 
-    def test_invalid_persistence_prevents_all_commands(self):
-        self.run_provider(persistent="maybe", expect_rc=1)
+    def test_invalid_serve_flag_prevents_all_commands(self):
+        self.run_provider(serve="maybe", expect_rc=1)
         self.assertEqual(self.commands, [])
 
-    def test_blank_persistence_defaults_to_reset_mode(self):
-        for value in ("", "   "):
+    def test_blank_serve_flag_defaults_to_reset_mode(self):
+        for value in ("", "   ", "blank"):
             with self.subTest(value=value):
-                payload = self.run_provider(persistent=value)
-                self.assertFalse(payload["persistent"])
+                payload = self.run_provider(serve=value)
+                self.assertTrue(payload["serve_enabled"])
                 self.assertEqual(self.mutations()[0], ["tailscale", "serve", "reset"])
 
     def test_missing_cli_has_no_urls(self):

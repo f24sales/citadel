@@ -18,7 +18,10 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         self.assertEqual(values["CITADEL_HTTPS_ONLY"], "0")
         self.assertEqual(values["CITADEL_HIDE_HTTP_WEBUI_DUPE"], "1")
         self.assertNotIn("CITADEL_WEBUI_HTTPS_PORT", values)
-        self.assertEqual(values["CITADEL_PERSISTENT"], "0")
+        self.assertEqual(values["CITADEL_TAILSCALE_SERVE"], "1")
+        self.assertEqual(values["TAILSCALE_SERVE_RESET"], "0")
+        self.assertNotIn("CITADEL_PERSISTENT", values)
+        self.assertNotIn("#named-volume:", example)
         self.assertEqual(values["CITADEL_LOGO_PERSISTENT"], "1")
         self.assertNotIn("CITADEL_TAILSCALE", values)
         self.assertNotIn("CITADEL_CLOUDFLARE", values)
@@ -32,9 +35,10 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         expected = {
             "CITADEL_HIDE_HTTP_WEBUI_DUPE",
             "CITADEL_LOGO_PERSISTENT",
-            "CITADEL_PERSISTENT",
+            "CITADEL_TAILSCALE_SERVE",
             "CADDYFILE_START",
             "CADDYFILE_STEPS",
+            "CLOUDFLARE_TUNNEL_TOKEN",
         }
         for name in ("citadel.service", "citadel-scan.service"):
             unit = (UNIT_DIR / name).read_text(encoding="utf-8")
@@ -44,6 +48,8 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
             self.assertTrue(expected.issubset(set(pass_environment.split("=")[1].split())))
             self.assertNotIn("CITADEL_TAILSCALE", pass_environment.split())
             self.assertNotIn("CITADEL_CLOUDFLARE", pass_environment.split())
+            self.assertNotIn("TUNNEL_TOKEN", pass_environment.split("=", 1)[1].split())
+            self.assertNotIn("CITADEL_PERSISTENT", pass_environment.split("=", 1)[1].split())
 
     def test_scan_coalesces_duplicate_requests_without_waiting(self) -> None:
         scan = (ROOT / "scan.sh").read_text(encoding="utf-8")
@@ -95,6 +101,9 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         unit = (UNIT_DIR / "citadel.service").read_text(encoding="utf-8")
         self.assertIn("Requires=persistainer.service", unit)
         self.assertIn("After=network.target persistainer.service", unit)
+        self.assertIn("After=tailscale-up.service", unit)
+        self.assertNotIn("tailscale-serve-reset", unit)
+        self.assertNotIn("serve reset", unit)
         self.assertIn("fedora45-wait-ready", unit)
 
     def test_cascade_python_can_import_its_system_wide_pip_dependencies(self) -> None:

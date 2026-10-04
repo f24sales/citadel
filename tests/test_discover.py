@@ -51,12 +51,12 @@ class DiscoverFileTests(unittest.TestCase):
             path.chmod(0o644)
             discover.update_key_values(
                 path,
-                {"TUNNEL_TOKEN": "connector-token"},
+                {"CLOUDFLARE_TUNNEL_TOKEN": "connector-token"},
                 secret=True,
             )
             values = discover.read_key_values(path)
             self.assertEqual(values["CLOUDFLARE_API_TOKEN"], "api-token")
-            self.assertEqual(values["TUNNEL_TOKEN"], "connector-token")
+            self.assertEqual(values["CLOUDFLARE_TUNNEL_TOKEN"], "connector-token")
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
 

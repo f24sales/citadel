@@ -44,6 +44,8 @@ class DaemonInstallerTests(unittest.TestCase):
             self.assertFalse((root / "service-calls").exists())
             self.assertFalse((root / "config").exists())
             self.assertFalse((root / "runtime").exists())
+            self.assertFalse((root / ".systemd").exists())
+            self.assertIn(f"WorkingDirectory={root}\n", (root / "citadel.service").read_text())
             return (root / "citadel.service").read_text()
 
     def test_unix_service_uses_shared_python_entrypoint(self) -> None:

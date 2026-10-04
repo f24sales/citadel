@@ -9,166 +9,128 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class SetupContainerfileTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name) / "CITADEL"
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "CITADEL"
         self.root.mkdir()
-        for name in ("setup.sh", "Containerfile.example"):
-            shutil.copy2(ROOT / name, self.root / name)
+        shutil.copy2(ROOT / "setup.sh", self.root / "setup.sh")
         for name in ("config.sh", "set_daemon.sh"):
             script = self.root / name
             script.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$0.called"\n')
             script.chmod(0o755)
-        self.bin_dir = Path(self.temporary.name) / "bin"
-        self.bin_dir.mkdir()
-        for command in ("podman", "docker", "buildah", "systemctl", "loginctl"):
-            stub = self.bin_dir / command
-            stub.write_text('#!/bin/sh\ntouch "$FORBIDDEN_CALL_LOG"\nexit 99\n')
-            stub.chmod(0o755)
-        self.environment = dict(os.environ)
-        self.environment["PATH"] = f"{self.bin_dir}:{os.defpath}"
-        self.environment["FORBIDDEN_CALL_LOG"] = str(Path(self.temporary.name) / "forbidden-call")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for name in ("podman", "docker", "buildah", "systemctl", "loginctl"):
+            script = self.bin / name
+            script.write_text('#!/bin/sh\ntouch "$FORBIDDEN_LOG"\nexit 99\n')
+            script.chmod(0o755)
+        self.environment = {**os.environ, "PATH": f"{self.bin}:{os.defpath}",
+                            "FORBIDDEN_LOG": str(self.root / "forbidden")}
 
-    def execute(self, *arguments, success=True):
+    def execute(self, *arguments):
         result = subprocess.run(["bash", str(self.root / "setup.sh"), *arguments],
-                                cwd=self.root.parent, env=self.environment,
-                                text=True, capture_output=True, timeout=10)
-        self.assertEqual(result.returncode == 0, success, result.stderr)
-        self.assertFalse(Path(self.environment["FORBIDDEN_CALL_LOG"]).exists())
+                                cwd=self.root, env=self.environment,
+                                capture_output=True, text=True, timeout=15)
+        self.assertFalse((self.root / "forbidden").exists())
         return result
 
-    def test_opt_in_renders_only_containerfile_without_build_or_config(self):
-        before = {path.name for path in self.root.iterdir()}
-        self.execute("--render-containerfile")
-        self.assertEqual({path.name for path in self.root.iterdir()} - before, {"Containerfile"})
-        self.assertEqual((self.root / "Containerfile").read_bytes(), (ROOT / "Containerfile.example").read_bytes())
+    def test_no_arguments_renders_both_and_prints_links_without_starting(self):
+        result = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "config.sh.called").read_text(), "\n")
+        self.assertEqual((self.root / "set_daemon.sh.called").read_text(), "--render-only\n")
+        self.assertIn(str(self.root / "citadel.service"), result.stdout)
+        self.assertIn(str(self.root / "citadel.container"), result.stdout)
+        self.assertEqual(result.stdout.count("ln -s"), 2)
+        self.assertTrue((self.root / "CADDY").is_dir())
 
-    def test_matching_render_is_idempotent(self):
-        self.execute("--render-containerfile")
-        target = self.root / "Containerfile"
-        before = target.stat()
-        self.execute("--render-containerfile")
-        self.assertEqual((target.stat().st_ino, target.stat().st_mtime_ns), (before.st_ino, before.st_mtime_ns))
-
-    def test_custom_containerfile_is_preserved(self):
-        target = self.root / "Containerfile"
-        target.write_text("FROM custom-image\n")
-        self.execute("--render-containerfile", success=False)
-        self.assertEqual(target.read_text(), "FROM custom-image\n")
-
-    def test_symlink_target_is_never_overwritten(self):
-        target = self.root / "Containerfile"
-        external = self.root.parent / "external"
-        for present in (False, True):
-            with self.subTest(present=present):
-                if present:
-                    external.write_bytes((ROOT / "Containerfile.example").read_bytes())
-                target.symlink_to(external)
-                self.execute("--render-containerfile", success=False)
-                self.assertTrue(target.is_symlink())
-                self.assertEqual(external.exists(), present)
-                if present:
-                    self.assertEqual(external.read_bytes(), (ROOT / "Containerfile.example").read_bytes())
-                target.unlink()
-
-    def test_missing_template_fails_before_any_render(self):
-        (self.root / "Containerfile.example").unlink()
-        self.execute("--render-containerfile", success=False)
-        self.assertFalse((self.root / "Containerfile").exists())
-        self.assertFalse((self.root / "config.sh.called").exists())
-
-    def test_render_flag_cannot_be_mixed_with_config_options(self):
-        for arguments in (("--render-containerfile", "--show"), ("--show", "--render-containerfile")):
-            with self.subTest(arguments=arguments):
-                self.execute(*arguments, success=False)
-                self.assertFalse((self.root / "Containerfile").exists())
+    def test_every_argument_is_rejected_before_configuration(self):
+        for argument in ("--help", "--show", "--render-containerfile", "--render-container", "host"):
+            with self.subTest(argument=argument):
+                self.assertEqual(self.execute(argument).returncode, 2)
                 self.assertFalse((self.root / "config.sh.called").exists())
 
-    def test_default_setup_keeps_existing_host_workflow(self):
-        self.execute("--show")
-        self.assertEqual((self.root / "config.sh.called").read_text(), "--no-container\n--show\n")
-        self.assertEqual((self.root / "set_daemon.sh.called").read_text(), "--render-only\n")
-        self.assertFalse((self.root / "Containerfile").exists())
+    def test_setup_symlink_keeps_generated_files_in_original_directory(self):
+        link = self.root.parent / "configure-citadel"
+        link.symlink_to(self.root / "setup.sh")
+        result = subprocess.run(["bash", str(link)], cwd=self.root.parent,
+                                env=self.environment, capture_output=True,
+                                text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.root / "citadel.service"), result.stdout)
+        self.assertIn(str(self.root / "citadel.container"), result.stdout)
+        self.assertTrue((self.root / "config.sh.called").exists())
+        self.assertFalse((self.root.parent / "CADDY").exists())
 
-    def test_container_checkout_keeps_existing_config_workflow(self):
-        parent = self.root.parent / "CONTAINER"
-        parent.mkdir()
-        self.root = self.root.rename(parent / "CITADEL")
-        self.execute("--show")
-        self.assertEqual((self.root / "config.sh.called").read_text(), "--show\n")
-        self.assertFalse((self.root / "set_daemon.sh.called").exists())
-        self.execute("--render-containerfile")
-        self.assertTrue((self.root / "Containerfile").is_file())
-
-    def test_help_does_not_configure_or_render(self):
-        result = self.execute("--help")
-        self.assertIn("--render-containerfile", result.stdout)
-        self.assertFalse((self.root / "Containerfile").exists())
-        self.assertFalse((self.root / "config.sh.called").exists())
-
-    def test_template_copies_sources_not_runtime_state_and_uses_shared_startup(self):
-        template = (ROOT / "Containerfile.example").read_text()
-        forbidden = {".env", ".tunnel-token", "config.conf", "config.ini", "ports.filter.json",
-                     "services.json", "routes.json", "status.json", "tailscale.json", "providers_state.json"}
-        for line in template.splitlines():
+    def test_recipe_copies_no_runtime_state_or_credentials(self):
+        recipe = (ROOT / ".github/scripts/Containerfile").read_text()
+        forbidden = {".env", "config.conf", "config.ini", "ports.filter.json",
+                     "services.json", "routes.json", "tailscale.json", "images.json", "auth.json"}
+        for line in recipe.splitlines():
             if not line.startswith("COPY "):
                 continue
             for pattern in shlex.split(line)[1:-1]:
                 self.assertNotIn(pattern, (".", "./", "*"))
                 matches = list(ROOT.glob(pattern))
-                self.assertTrue(matches, f"Missing build input: {pattern}")
+                self.assertTrue(matches, pattern)
                 for path in matches:
-                    copied = list(path.rglob("*")) if path.is_dir() else [path]
-                    self.assertFalse(any(entry.name in forbidden for entry in copied), pattern)
-        command = next(line.removeprefix("CMD ") for line in template.splitlines() if line.startswith("CMD "))
-        self.assertEqual(json.loads(command), ["/usr/bin/python3", "-s", "webui.py"])
-        self.assertNotIn("CITADEL_WEBUI_TRANSPORT=", template)
-        self.assertNotIn("pip install", template)
+                    contents = list(path.rglob("*")) if path.is_dir() else [path]
+                    self.assertFalse(any(item.name in forbidden for item in contents), pattern)
+        command = next(line.removeprefix("ENTRYPOINT ") for line in recipe.splitlines() if line.startswith("ENTRYPOINT "))
+        self.assertEqual(json.loads(command)[-1], "/usr/local/bin/citadel-container")
+        self.assertIn("alpine:", recipe)
+        self.assertIn("@sha256:", recipe)
+        self.assertIn("ln -s /CITADEL/ports.filter.json", recipe)
+        self.assertNotIn("pip install", recipe)
 
-    def test_real_container_generator_inherits_python_startup_for_both_transports(self):
+    def test_real_renderer_keeps_bootstrap_and_conditional_mounts(self):
         for name in ("config.sh", "config.conf_example", "container.example"):
             shutil.copy2(ROOT / name, self.root / name)
-        (self.root / "webui.py").write_text("# Fixture: generator detects a Python WebUI.\n")
-        self.environment["CONFIG_CONTAINER_IMAGE"] = "localhost/citadel:test"
-        self.execute("--render-containerfile")
-        for transport in (None, "", "tcp", "unix"):
-            with self.subTest(transport=transport):
-                config = "FASTAPI_HOST=127.0.0.1\nCITADEL_WEBUI_PORT=11000\n"
-                if transport is not None:
-                    config += f"CITADEL_WEBUI_TRANSPORT={transport}\n"
-                if transport == "unix":
-                    config += "CITADEL_WEBUI_SOCKET=/run/citadel/citadel.sock\n"
-                (self.root / "config.conf").write_text(config)
-                # Exercise regeneration of old generated files, not only a
-                # clean output directory. All writes stay inside this fixture.
-                (self.root / "docker-compose.yml").write_text(
-                    "services:\n  citadel:\n    command: uvicorn webui:app --host 0.0.0.0\n"
-                )
-                (self.root / "citadel.container").write_text(
-                    "[Container]\nExec=uvicorn webui:app --host 0.0.0.0\n"
-                )
-                result = subprocess.run(
-                    ["bash", str(self.root / "config.sh"), "--render-container"],
-                    cwd=self.root, env=self.environment, stdin=subprocess.DEVNULL,
-                    text=True, capture_output=True, timeout=15,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                compose = (self.root / "docker-compose.yml").read_text()
-                quadlet = (self.root / "citadel.container").read_text()
-                self.assertNotIn("uvicorn", compose + quadlet)
-                self.assertNotIn("command:", compose)
-                self.assertNotIn("Exec=", quadlet)
-                self.assertIn("dockerfile: Containerfile", compose)
-                self.assertIn(f"EnvironmentFile={self.root}/config.conf", quadlet)
-                self.assertIn(f"      - {self.root}/config.conf", compose)
-                self.assertEqual((self.root / "config.conf").read_text(), config)
-                self.assertFalse(Path(self.environment["FORBIDDEN_CALL_LOG"]).exists())
+        (self.root / "config.conf").write_text("CITADEL_WEBUI_PORT=11000\nCITADEL_WEBUI_TRANSPORT=unix\n")
+        (self.root / "container.conf").write_text("CITADEL_WEBUI_PUBLISH_PORT=\n")
+        (self.root / ".env").write_text("TS_AUTHKEY=\n")
+        result = subprocess.run(["bash", str(self.root / "config.sh"), "--render-container"],
+                                cwd=self.root, env=self.environment, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        quadlet = (self.root / "citadel.container").read_text()
+        self.assertNotIn("Exec=", quadlet)
+        self.assertNotIn("PublishPort=", quadlet)
+        self.assertIn(f"Volume={self.root}/CADDY:/CADDY:z", quadlet)
+        self.assertIn("#Volume=citadel-tailscale:/var/lib/tailscale:Z", quadlet)
+        self.assertIn("EnvironmentFile=" + str(self.root / "config.conf"), quadlet)
+        self.assertIn("EnvironmentFile=" + str(self.root / ".env"), quadlet)
+        self.assertFalse((self.root / "forbidden").exists())
+
+    def test_host_and_quadlet_share_the_original_configuration_files(self):
+        for name in ("config.sh", "set_daemon.sh", "config.conf_example", "container.example"):
+            shutil.copy2(ROOT / name, self.root / name)
+        config = self.root / "config.conf"
+        secrets = self.root / ".env"
+        config.write_text("CITADEL_WEBUI_TRANSPORT=tcp\nCITADEL_WEBUI_PORT=12345\n")
+        secrets.write_text("CITADEL_TOKEN=local-test-only\n")
+        (self.root / "container.conf").write_text("CITADEL_WEBUI_PUBLISH_PORT=\n")
+        before = {path: path.read_bytes() for path in (config, secrets)}
+        for script, argument in (("config.sh", "--render-container"),
+                                 ("set_daemon.sh", "--render-only")):
+            result = subprocess.run(["bash", str(self.root / script), argument],
+                                    cwd=self.root.parent, env=self.environment,
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        unit = (self.root / "citadel.service").read_text()
+        quadlet = (self.root / "citadel.container").read_text()
+        self.assertIn(f"WorkingDirectory={self.root}\n", unit)
+        self.assertIn(str(self.root / "webui.py"), unit)
+        for path, original in before.items():
+            self.assertIn(f"EnvironmentFile={path}\n", quadlet)
+            self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.root / ".systemd").exists())
+        self.assertFalse((self.root / "forbidden").exists())
 
 
 if __name__ == "__main__":

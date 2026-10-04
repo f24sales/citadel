@@ -1,6 +1,47 @@
-# Use the Containerfile CMD: /usr/bin/python3 -s webui.py.
-# The Python entrypoint selects TCP or Unix from runtime configuration.
+# Keep the image bootstrap: Tailscale, optional reset, Cloudflared, WebUI, scan.
 #container-command: image
 
-#required: CITADEL published web UI port
+# Built only by GitHub Actions. Pin a tested YYYY.MM.N tag/digest before deployment;
+# pull exclusively through Smart1.
+IMAGE=ghcr.io/safrano9999/citadel:latest
+
+# Volume naming; the Quadlet name comes from the checkout directory.
+#default-preset: citadel
+CONTAINER_NAME=citadel
+
+#default-preset: 127.0.0.1
+CITADEL_WEBUI_PUBLISH_HOST=127.0.0.1
+# Blank for Podman-network-only access or Network=host.
+#default-preset: 11000
 CITADEL_WEBUI_PUBLISH_PORT=11000
+
+# Node identity, keys and Tailscale state; not an ephemeral node login.
+#volume-if: TAILSCALE_VOLUMES TS_AUTHKEY
+#default-preset: ${CONTAINER_NAME}-tailscale:/var/lib/tailscale:Z
+TAILSCALE_VOLUMES=${CONTAINER_NAME}-tailscale:/var/lib/tailscale:Z
+
+# Separate from CITADEL_LOGO_PERSISTENT's download behavior.
+#volume-if: CITADEL_LOGOS_VOLUMES CITADEL_LOGOS_VOLUMES
+#default-preset: ${CONTAINER_NAME}-logos:/opt/safrano9999/CITADEL/icons:Z
+CITADEL_LOGOS_VOLUMES=${CONTAINER_NAME}-logos:/opt/safrano9999/CITADEL/icons:Z
+
+# Port filter/Cloudflare policy and managed-object IDs, not application code.
+#volume-if: CITADEL_VOLUMES CITADEL_VOLUMES
+#default-preset: ${CONTAINER_NAME}-citadel:/CITADEL:Z
+CITADEL_VOLUMES=${CONTAINER_NAME}-citadel:/CITADEL:Z
+
+# Share with Caddy read-only (:ro,z there): Caddyfile, ports.json and optional
+# citadel.sock. The image uses /CADDY/citadel.sock when Unix mode is selected.
+#volume-if: CADDY_VOLUMES CADDYFILE_START>0 CITADEL_WEBUI_TRANSPORT=unix
+#default-preset: ./CADDY:/CADDY:z
+CADDY_VOLUMES=./CADDY:/CADDY:z
+
+# May be blank for a mounted host Tailscale socket or TS_USERSPACE=1.
+CITADEL_CAPABILITIES=NET_ADMIN,NET_RAW
+CITADEL_DEVICES=/dev/net/tun
+
+# Network=core for your existing Podman network; Network=host for host scanning.
+# With host networking, also mount the host Tailscale socket to reuse its daemon.
+#repeat-group: ADDITIONAL_LINE suffix02 ADDITIONAL_LINE
+#repeat-freeform: ADDITIONAL_LINE
+ADDITIONAL_LINE=

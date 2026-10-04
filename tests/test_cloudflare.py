@@ -525,13 +525,36 @@ class CloudflareActivationTests(unittest.TestCase):
         self.api.tunnel_configuration.assert_not_called()
         self.assert_no_remote_mutations()
 
-    def test_invalid_origin_or_whitelist_still_prevents_resource_mutations(self):
+    def test_subnet_setting_does_not_change_localhost_origin(self):
         self.settings["CITADEL_SUBNET_IP"] = "invalid/origin"
         code, payload = self.run_provider()
-        self.assertEqual(code, 1)
-        self.assertTrue(payload["considered"])
-        self.assertIn("CITADEL_SUBNET_IP", payload["errors"][0])
-        self.settings.pop("CITADEL_SUBNET_IP")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["origin_host"], "127.0.0.1")
+        for port, route in payload["services"].items():
+            self.assertRegex(route["target"], rf"^https?://127\.0\.0\.1:{port}$")
+
+    def test_each_scan_replaces_managed_ingress_and_removes_disappeared_ports(self):
+        self.write("extensions/enabled/cloudflare/routes.json", {
+            "managed_hostnames": ["9999.services.example.net"],
+            "dns_records": {"9999.services.example.net": "old-dns"},
+            "services": {"9999": {"url": "https://9999.services.example.net"}},
+        })
+        manual = {"hostname": "manual.example.net", "service": "http://other:1234"}
+        self.api.tunnel_configuration.return_value = {"ingress": [
+            manual,
+            {"hostname": "9999.services.example.net", "service": "http://127.0.0.1:9999"},
+            {"service": "http_status:404"},
+        ]}
+        code, payload = self.run_provider()
+        self.assertEqual(code, 0)
+        self.assertEqual(set(payload["services"]), {"8000"})
+        ingress = self.api.update_tunnel_configuration.call_args.args[2]["ingress"]
+        self.assertEqual(ingress, [manual, {
+            "hostname": "8000.services.example.net", "service": "http://127.0.0.1:8000"},
+            {"service": "http_status:404"}])
+        self.api.delete_dns_record.assert_called_once_with("zone", "old-dns")
+
+    def test_invalid_whitelist_still_prevents_resource_mutations(self):
         self.write("ports.filter.json", {"cloudflare": {"8000": {"whitelist": True, "emails": []}}})
         code, payload = self.run_provider()
         self.assertEqual(code, 1)

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Publish discovered local services through same-port Tailscale HTTPS Serve."""
+"""Publish same-port HTTPS links, optionally managing Tailscale Serve."""
 from __future__ import annotations
 
 import argparse
 import copy
 import importlib
+import ipaddress
 import json
 import os
 import shutil
@@ -142,6 +143,39 @@ def citadel_value(provider_dir: str, key: str, default: str = "") -> str:
     return str(importlib.import_module("python_header").get(key, default)).strip()
 
 
+def serve_management_enabled(provider_dir: str) -> bool:
+    raw = citadel_value(provider_dir, "CITADEL_TAILSCALE_SERVE", "1").strip().lower()
+    raw = "1" if raw in ("", "blank") else raw
+    if raw not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
+        raise ValueError("CITADEL_TAILSCALE_SERVE must be a boolean")
+    return parse_bool(raw)
+
+
+def direct_https(domain: str, port: int, info: dict[str, Any]) -> str:
+    """Verify HTTPS on this node's actual Tailnet IP, not a loopback/DNS alias.
+
+    No Serve commands or certificate generation; curl checks the existing
+    frontend's public certificate and does not follow redirects or use proxies.
+    """
+    addresses = info.get("Self", {}).get("TailscaleIPs") or []
+    failures = []
+    url = f"https://{domain}:{port}"
+    for raw in addresses:
+        try:
+            address = ipaddress.ip_address(raw)
+            resolved = f"[{address}]" if address.version == 6 else str(address)
+            code = command(["curl", "--noproxy", "*", "--silent", "--show-error",
+                            "--connect-timeout", "2", "--max-time", "4",
+                            "--output", "/dev/null", "--write-out", "%{http_code}",
+                            "--resolve", f"{domain}:{port}:{resolved}", url], timeout=5).strip()
+            if code.isdigit() and 100 <= int(code) <= 599:
+                return url
+            failures.append(f"{address}: no HTTP response")
+        except ValueError as exc:
+            failures.append(str(exc).splitlines()[0])
+    raise ValueError("direct HTTPS unavailable: " + ("; ".join(failures) or "node has no Tailscale IP"))
+
+
 def validate_services(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     rows = payload.get("http_services")
     if not isinstance(rows, list):
@@ -162,7 +196,7 @@ def validate_services(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(int(service["port"])): service for service in routable_services(payload)}
 
 
-def publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, persistent):
+def publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, manage_serve, skipped):
     for service in services_payload.get("http_services", []):
         if not isinstance(service.get("urls"), dict):
             service["urls"] = {}
@@ -187,8 +221,8 @@ def publish(args, ext, services_payload, services, routes, errors, enabled, runn
         "provider_id": "tailscale", "label": str(ext.get("label") or "Tailscale"),
         "considered": enabled, "enabled": enabled, "available": bool(routes),
         "generated_at": now_iso(), "default_candidate": True, "running": running,
-        "domain": domain, "persistent": persistent, "route_schema": ROUTE_SCHEMA_VERSION,
-        "services": routes, "errors": errors,
+        "domain": domain, "serve_enabled": manage_serve, "route_schema": ROUTE_SCHEMA_VERSION,
+        "services": routes, "errors": errors, "skipped": skipped,
     }
     write_json(args.routes_out, payload)
     write_json(args.tailscale_file, payload)
@@ -203,10 +237,7 @@ def main() -> int:
         provider_dir = Path(args.provider_dir).absolute()
         ext = json_object((provider_dir / "extension.json").read_text(encoding="utf-8"))
         enabled = provider_dir.parent.name == "enabled" and parse_bool(ext.get("enabled", True))
-        raw_persistent = citadel_value(args.provider_dir, "CITADEL_PERSISTENT", "0").strip().lower() or "0"
-        if raw_persistent not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
-            raise ValueError("CITADEL_PERSISTENT must be a boolean")
-        persistent = parse_bool(raw_persistent)
+        manage_serve = serve_management_enabled(args.provider_dir)
         services_payload = json_object(Path(args.services_file).read_text(encoding="utf-8"))
         services = validate_services(services_payload)
     except (OSError, ValueError, TypeError) as exc:
@@ -214,6 +245,7 @@ def main() -> int:
         return 1
 
     errors: list[str] = []
+    skipped: dict[str, str] = {}
     routes: dict[str, dict[str, Any]] = {}
     running, domain = False, None
     if enabled:
@@ -222,20 +254,29 @@ def main() -> int:
             running = True
             cert_domains = info.get("CertDomains") or []
             domain = (info.get("Self", {}).get("DNSName") or next(iter(cert_domains), "")).rstrip(".")
-            if not domain or domain not in cert_domains:
+            if not domain:
+                raise ValueError("Tailscale has no node DNS name")
+            if manage_serve and domain not in cert_domains:
                 raise ValueError("Tailscale has no certificate domain; enable HTTPS certificates manually")
-            if not persistent:
+            if manage_serve:
                 command(["tailscale", "serve", "reset"])
-            live = read_live_serve()
-            if not persistent and any(live.get(field) for field in ("TCP", "Web", "AllowFunnel", "Foreground", "Services")):
-                raise ValueError("Serve reset did not clear the configuration; rebuild aborted")
+                live = read_live_serve()
+                if any(live.get(field) for field in ("TCP", "Web", "AllowFunnel", "Foreground", "Services")):
+                    raise ValueError("Serve reset did not clear the configuration; rebuild aborted")
             for key, service in sorted(services.items(), key=lambda item: int(item[0])):
                 port = int(key)
                 target = serve_target(port, service["scheme"])
                 try:
+                    if not manage_serve:
+                        if service["scheme"] == "https":
+                            try:
+                                routes[key] = route_record("direct", direct_https(domain, port, info))
+                            except ValueError as exc:
+                                skipped[key] = str(exc)
+                        else:
+                            skipped[key] = "HTTP backend needs an HTTPS frontend; Serve is disabled"
+                        continue
                     if not https_route_matches(live, domain, port, target):
-                        if key in node_ports(live):
-                            live = remove_node_ports(live, {key})
                         # Peer Serve is intercepted before the host kernel.
                         # On TUN nodes, its additional local listener can block
                         # a wildcard backend on restart; see deployment notes.
@@ -249,7 +290,9 @@ def main() -> int:
                     errors.append(f"port {port}: {exc}")
         except (ValueError, TypeError, AttributeError) as exc:
             errors.append(str(exc))
-    publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, persistent)
+    publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, manage_serve, skipped)
+    for port, reason in skipped.items():
+        print(f"skip direct Tailscale port {port}: {reason}")
     for error in errors:
         print(error, file=sys.stderr)
     return 1 if errors else 0

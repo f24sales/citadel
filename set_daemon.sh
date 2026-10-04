@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 UNIT_NAME="citadel.service"
 RENDER_ONLY=false
 
@@ -11,11 +11,7 @@ case "${1:-}" in
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
 esac
 
-if "$RENDER_ONLY"; then
-    LOCAL_UNIT_DIR="$SCRIPT_DIR"
-else
-    LOCAL_UNIT_DIR="$SCRIPT_DIR/.systemd"
-fi
+LOCAL_UNIT_DIR="$SCRIPT_DIR"
 LOCAL_UNIT="$LOCAL_UNIT_DIR/$UNIT_NAME"
 USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 USER_UNIT="$USER_UNIT_DIR/$UNIT_NAME"
@@ -23,6 +19,8 @@ USER_UNIT="$USER_UNIT_DIR/$UNIT_NAME"
 PYTHON_BIN="$(command -v "${PYTHON_BIN:-/usr/bin/python3}")"
 # webui.py resolves TCP/Unix from the loaded configuration at each start, just
 # as it does outside systemd. Rendering needs no config parsing or socket setup.
+# python_header reads this directory's config.conf and .env directly. Do not
+# copy them or inject FASTAPI_HOST: injection intentionally changes the bind.
 EXEC_START="$PYTHON_BIN -s $SCRIPT_DIR/webui.py"
 
 if ! "$RENDER_ONLY"; then

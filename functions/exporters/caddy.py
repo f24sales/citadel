@@ -118,12 +118,16 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
                "considered": False, "available": False, "generated_at": now_iso(),
                "services": {}, "artifacts": [], "mappings_count": 0, "errors": []}
     try:
-        start = port_number(start_raw.strip() or "0", "CADDYFILE_START", allow_zero=True)
+        start_text = start_raw.strip()
+        start = port_number("0" if start_text.lower() in ("", "blank") else start_text,
+                            "CADDYFILE_START", allow_zero=True)
         if not start:
             # Disabling never deletes an operator's mounted file, allocation, or route.
             return payload
         payload["considered"] = True
-        steps = port_number(steps_raw.strip() or "1", "CADDYFILE_STEPS")
+        steps_text = steps_raw.strip()
+        remember = steps_text.lower() not in ("", "blank")
+        steps = port_number(steps_text if remember else "1", "CADDYFILE_STEPS")
         config = read_object(provider_dir / "config.json")
         backend = host_name(config.get("backend", "127.0.0.1"))
         raw_hosts = config.get("hosts", ["localhost"])
@@ -145,15 +149,18 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
             services.append({"port": port, "scheme": row["scheme"]})
         directory = root / "caddyfile"
         allocation_file = directory / "ports.json"
-        previous = read_object(allocation_file) if allocation_file.exists() else None
+        previous = read_object(allocation_file) if remember and allocation_file.exists() else None
         assigned = allocate(list(seen), start, steps, previous)
         content = render(services, assigned, backend, hosts)
         # Reserve slots first; a failed file write must not silently reuse a slot later.
         allocation = {"start": start, "steps": steps, "ports": assigned}
-        if allocation != previous:
+        if remember and allocation != previous:
             write_json(str(allocation_file), allocation)
         destination = directory / "Caddyfile"
         write_text(destination, content)
+        if not remember:
+            # Only our allocation ledger; never delete the mounted directory.
+            allocation_file.unlink(missing_ok=True)
         payload.update(available=True, generated_file=str(destination), mappings_count=len(services),
                        artifacts=[{"path": "caddyfile/Caddyfile", "sha256": hashlib.sha256(content.encode()).hexdigest()}])
     except (OSError, ValueError, TypeError) as exc:

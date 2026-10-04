@@ -19,6 +19,7 @@ from providers.tailscale import (
     node_ports,
     read_live_serve,
     remove_node_ports,
+    serve_management_enabled,
 )
 
 STATE_PATHS = ("tailscale.json", "extensions/enabled/tailscale/routes.json")
@@ -121,6 +122,13 @@ def _unroute_locked(project_dir: Path, requested_ports: list[int] | None) -> int
 
 
 def unroute(project_dir: Path, requested_ports: list[int] | None = None) -> int:
+    try:
+        enabled = serve_management_enabled(str(project_dir / "extensions/enabled/tailscale"))
+    except ValueError as exc:
+        raise UnrouteError(str(exc)) from exc
+    if not enabled:
+        print("[unroute] CITADEL_TAILSCALE_SERVE=0; Serve and metadata left unchanged")
+        return 0
     runtime = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("TMPDIR") or "/tmp"
     path = Path(os.environ.get("CITADEL_SCAN_LOCK_FILE") or f"{runtime}/citadel-scan-{os.getuid()}.lock")
     path.parent.mkdir(parents=True, exist_ok=True)

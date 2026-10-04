@@ -12,6 +12,10 @@ config.conf
 .tunnel-token
 .systemd/
 /citadel.service
+/citadel.container
+/container.conf
+/docker-compose.yml
+/CADDY/
 
 # Extensions runtime
 extensions/providers_state.json

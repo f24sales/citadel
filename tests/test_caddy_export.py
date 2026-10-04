@@ -32,7 +32,7 @@ class CaddyExportTests(unittest.TestCase):
         (self.root / "services.json").write_text(json.dumps({
             "http_services": [{"port": port, "scheme": "http"} for port in ports]}))
 
-    def run_export(self, start="4000", steps=""):
+    def run_export(self, start="4000", steps="1"):
         return caddy.export(self.root, self.provider, start, steps)
 
     def mapping(self):
@@ -41,14 +41,14 @@ class CaddyExportTests(unittest.TestCase):
     def test_disabled_does_not_create_directory_or_require_valid_settings(self):
         (self.provider / "config.json").unlink()
         (self.root / "services.json").unlink()
-        for start in ("", "0", "   "):
+        for start in ("", "0", "   ", "blank"):
             with self.subTest(start=start):
                 result = self.run_export(start, "invalid")
                 self.assertFalse(result["considered"])
                 self.assertEqual(result["errors"], [])
                 self.assertFalse((self.root / "caddyfile").exists())
 
-    def test_blank_steps_defaults_to_one_and_only_writes_files(self):
+    def test_explicit_one_remembers_assignments_and_only_writes_files(self):
         with patch("subprocess.run", side_effect=AssertionError("No processes")):
             result = self.run_export()
         self.assertTrue(result["available"], result["errors"])
@@ -60,6 +60,33 @@ class CaddyExportTests(unittest.TestCase):
         self.assertIn("reverse_proxy http://ucore:11000", text)
         self.assertNotIn("tls_insecure_skip_verify", text)
         self.assertNotIn("unix//", text)
+
+    def test_blank_steps_discards_old_slots_and_rebuilds_without_a_ledger(self):
+        for steps in ("", "   ", "blank"):
+            with self.subTest(steps=steps):
+                self.services([9090, 11000])
+                self.run_export(steps="1")
+                self.services([4096, 11000])
+                result = self.run_export(steps=steps)
+                self.assertEqual(result["errors"], [])
+                self.assertFalse((self.root / "caddyfile/ports.json").exists())
+                text = (self.root / "caddyfile/Caddyfile").read_text()
+                self.assertIn("# backend 4096 -> HTTPS 4000", text)
+                self.assertIn("# backend 11000 -> HTTPS 4001", text)
+                self.assertNotIn("9090", text)
+
+    def test_fresh_mode_can_replace_corrupt_ledger_but_preserves_it_on_invalid_scan(self):
+        self.run_export()
+        ledger = self.root / "caddyfile/ports.json"
+        ledger.write_text("broken")
+        self.services([4096])
+        self.assertEqual(self.run_export(steps="")["errors"], [])
+        self.assertFalse(ledger.exists())
+        self.run_export()
+        before = ledger.read_bytes()
+        (self.root / "services.json").write_text("broken")
+        self.assertTrue(self.run_export(steps="")["errors"])
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_new_low_port_appends_and_missing_service_keeps_its_slot(self):
         self.run_export()

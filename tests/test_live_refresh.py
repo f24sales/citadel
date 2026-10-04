@@ -68,7 +68,7 @@ class LiveRefreshTests(unittest.TestCase):
 
     def test_preserves_data_links_and_known_disabled_selection(self):
         (self.old / ".env").write_text("CUSTOM=value\n")
-        (self.old / "config.conf").write_text("CUSTOM=keep\nCITADEL_PERSISTENT=1\n")
+        (self.old / "config.conf").write_text("CUSTOM=keep\nCITADEL_TAILSCALE_SERVE=1\n")
         (self.old / "config.ini").write_text("ca_cert=/custom/cert\n")
         (self.old / "icons").mkdir()
         (self.old / "icons/custom.svg").write_text("custom")
@@ -84,7 +84,7 @@ class LiveRefreshTests(unittest.TestCase):
         self.execute()
         self.assertEqual((self.old / ".env").read_text(), "CUSTOM=value\n")
         self.assertIn("CUSTOM=keep", (self.old / "config.conf").read_text())
-        self.assertIn("CITADEL_PERSISTENT=0", (self.old / "config.conf").read_text())
+        self.assertIn("CITADEL_TAILSCALE_SERVE=1", (self.old / "config.conf").read_text())
         self.assertEqual((self.old / "icons/custom.svg").read_text(), "custom")
         self.assertTrue((self.old / "ports.filter.json").is_symlink())
         self.assertTrue((self.old / "extensions/enabled/cloudflare/routes.json").is_symlink())
@@ -95,8 +95,8 @@ class LiveRefreshTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.old / "caddyfile"), str(self.export))
         self.assertFalse(any(command[1:2] in (["start"], ["stop"], ["restart"]) for command in self.calls))
         for unit in refresh.UNITS:
-            self.assertIn("Environment=CITADEL_PERSISTENT=0", (self.args.unit_dir / f"{unit}.d/95-citadel-instance.conf").read_text())
-            self.assertIn("UnsetEnvironment=CITADEL_WEBUI_HTTPS_PORT", (self.args.unit_dir / f"{unit}.d/95-citadel-instance.conf").read_text())
+            self.assertIn("Environment=CITADEL_TAILSCALE_SERVE=1", (self.args.unit_dir / f"{unit}.d/95-citadel-instance.conf").read_text())
+            self.assertIn("UnsetEnvironment=CITADEL_PERSISTENT CITADEL_WEBUI_HTTPS_PORT", (self.args.unit_dir / f"{unit}.d/95-citadel-instance.conf").read_text())
 
     def test_same_commit_still_reconciles_units_without_extra_backup(self):
         self.execute()
@@ -108,7 +108,7 @@ class LiveRefreshTests(unittest.TestCase):
         directory = self.args.instance_dir
         directory.mkdir()
         contents = {
-            "instance.conf": "CADDYFILE_START=4500\nCITADEL_PERSISTENT=0\nCITADEL_WEBUI_TRANSPORT=tcp\nFASTAPI_HOST=0.0.0.0\nCITADEL_WEBUI_PORT=11000\nPRIVATE_TOKEN=not-copied\n",
+            "instance.conf": "CADDYFILE_START=4500\nCITADEL_TAILSCALE_SERVE=1\nCITADEL_WEBUI_TRANSPORT=tcp\nFASTAPI_HOST=0.0.0.0\nCITADEL_WEBUI_PORT=11000\nPRIVATE_TOKEN=not-copied\n",
             "export-config.json": '{"backend":"shared-backend","hosts":["node.example","localhost","127.0.0.1"]}\n',
             "service.conf": f"[Unit]\nAfter=fedora45-ai-init-hooks.service\n[Service]\nEnvironmentFile={directory}/instance.conf\n",
         }
@@ -230,9 +230,9 @@ class LiveRefreshTests(unittest.TestCase):
         self.assertTrue((self.old / "webui.py").exists())
 
     def test_aligned_config_keeps_unrelated_values_and_is_idempotent(self):
-        text = "# comment\nCUSTOM=quoted value\nexport CITADEL_PERSISTENT=1\nCITADEL_PERSISTENT=1\n"
+        text = "# comment\nCUSTOM=quoted value\nexport CITADEL_TAILSCALE_SERVE=1\nCITADEL_TAILSCALE_SERVE=1\n"
         result = refresh.aligned_config(text)
-        self.assertEqual(result.count("CITADEL_PERSISTENT="), 1)
+        self.assertEqual(result.count("CITADEL_TAILSCALE_SERVE="), 1)
         self.assertIn("CUSTOM=quoted value", result)
         self.assertEqual(refresh.aligned_config(result), result)
 
@@ -240,8 +240,8 @@ class LiveRefreshTests(unittest.TestCase):
         text = "# custom settings\nCUSTOM=keep\n" + "".join(
             f"export {key}=old-value\n" for key in refresh.RETIRED
         )
-        result = refresh.aligned_config(text, {"CITADEL_PERSISTENT": "0"})
-        self.assertEqual(result, "# custom settings\nCUSTOM=keep\nCITADEL_PERSISTENT=0\n")
+        result = refresh.aligned_config(text, {"CITADEL_TAILSCALE_SERVE": "1"})
+        self.assertEqual(result, "# custom settings\nCUSTOM=keep\nCITADEL_TAILSCALE_SERVE=1\n")
         self.assertNotIn("CADDYFILE_START", result)
 
     def test_failed_live_restart_restores_old_code_and_unit(self):

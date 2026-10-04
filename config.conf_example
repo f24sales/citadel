@@ -24,21 +24,33 @@ CITADEL_HIDE_HTTP_WEBUI_DUPE=1
 # The caddy extension's config.json specifies Caddy's hosts and backend address.
 CADDYFILE_START=
 
-# Empty uses 1. Existing backend ports retain their assigned frontend ports.
+# Empty/blank uses step 1 and rebuilds all assignments on every scan.
+# An explicit positive number retains assigned frontend ports across scans.
 CADDYFILE_STEPS=1
 
-# 0 rebuilds Tailscale Serve routes from scratch on every scan.
-# 1 retains routes and persists policy/state across container recreation.
-# Listener discovery is always fresh; logos have their own setting below.
-#named-volume: /named_volumes/CITADEL /named_volumes/CITADEL/ports.filter.json /opt/safrano9999/CITADEL/ports.filter.json file
-#named-volume: /named_volumes/CITADEL /named_volumes/CITADEL/extensions/enabled/cloudflare/routes.json /opt/safrano9999/CITADEL/extensions/enabled/cloudflare/routes.json file
-#named-volume: /named_volumes/CITADEL /named_volumes/CITADEL/tailscale.json /opt/safrano9999/CITADEL/tailscale.json link
+# 1 resets and rebuilds same-port HTTPS Serve routes on every scan.
+# 0 never manages Serve; advertise only verified direct HTTPS endpoints.
+# Volumes/mounts are configured separately at the container level.
+#choices: 0 1
+#default-preset: 1
+CITADEL_TAILSCALE_SERVE=1
+
+# Bootstrap only: clear all Serve/Funnel routes after Tailscale up, before WebUI.
+# Independent of the Citadel scan; only literal 1 enables the reset.
 #choices: 0 1
 #default-preset: 0
-CITADEL_PERSISTENT=0
+TAILSCALE_SERVE_RESET=0
 
-# Keep logos independently of policy persistence. Discovery is always fresh.
-#named-volume: /named_volumes/CITADEL_LOGOS /named_volumes/CITADEL_LOGOS/icons /opt/safrano9999/CITADEL/icons dir
+# Empty uses the container hostname.
+TS_HOSTNAME=
+TS_EXTRA_ARGS=--ssh
+
+# Kernel TUN by default; userspace mode needs no /dev/net/tun or NET_ADMIN.
+#choices: 0 1
+#default-preset: 0
+TS_USERSPACE=0
+
+# Keep downloaded logos between scans. Volume mounts are configured separately.
 #choices: 0 1
 #default-preset: 1
 CITADEL_LOGO_PERSISTENT=1

@@ -1,0 +1,50 @@
+# Source of truth: SCRIPTS/githubactions. Generated copies are overwritten.
+FROM docker.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+ARG CLOUDFLARED_VERSION=2026.9.3
+ARG CLOUDFLARED_SHA256=77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2
+
+# Stable Alpine repositories only; system Python packages, no pip/venv/compiler.
+RUN apk add --no-cache \
+      python3 py3-dotenv py3-fastapi py3-jinja2 uvicorn \
+      py3-uvloop py3-httptools py3-watchfiles py3-websockets py3-yaml \
+      bash coreutils findutils grep sed gawk curl jq iproute2-ss util-linux \
+      ca-certificates tini tailscale=1.98.10-r0 \
+ && test "$(apk --print-arch)" = x86_64 \
+ && curl --fail --location --retry 3 \
+      "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+      -o /usr/local/bin/cloudflared \
+ && echo "${CLOUDFLARED_SHA256}  /usr/local/bin/cloudflared" | sha256sum -c - \
+ && chmod 0755 /usr/local/bin/cloudflared \
+ && cloudflared --version \
+ && python3 -s -c 'import dotenv, fastapi, jinja2, uvicorn'
+
+WORKDIR /opt/safrano9999/CITADEL
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 FASTAPI_HOST=0.0.0.0 \
+    CITADEL_WEBUI_SOCKET=/CADDY/citadel.sock
+
+# Source allowlist: no runtime configuration, credentials, cached scans or logos.
+COPY webui.py python_header.py scan.sh unroute.sh requirements.txt config.conf_example config.ini.example env.example citadel.svg ./
+COPY functions/*.py ./functions/
+COPY functions/providers/*.py ./functions/providers/
+COPY functions/exporters/*.py ./functions/exporters/
+COPY assets/ ./assets/
+COPY templates/ ./templates/
+COPY extensions/ui.json ./extensions/
+COPY extensions/enabled/caddy/extension.json extensions/enabled/caddy/config.json ./extensions/enabled/caddy/
+COPY extensions/enabled/cloudflare/extension.json extensions/enabled/cloudflare/config.json ./extensions/enabled/cloudflare/
+COPY extensions/enabled/localhost/extension.json extensions/enabled/localhost/config.json ./extensions/enabled/localhost/
+COPY extensions/enabled/subnet/extension.json extensions/enabled/subnet/config.json ./extensions/enabled/subnet/
+COPY extensions/enabled/tailscale/extension.json extensions/enabled/tailscale/config.json ./extensions/enabled/tailscale/
+COPY image/runtime/usr/local/bin/tailscale-serve-reset.sh /usr/local/bin/
+COPY container/entrypoint.py /usr/local/bin/citadel-container
+
+# Mutable settings only; atomic_write_json follows these links when updating.
+RUN mkdir -p icons cache /CADDY /CITADEL extensions/disabled /var/lib/tailscale /run/citadel \
+ && ln -s /CADDY caddyfile \
+ && ln -s /CITADEL/ports.filter.json ports.filter.json \
+ && ln -s /CITADEL/cloudflare-routes.json extensions/enabled/cloudflare/routes.json \
+ && chmod 0755 scan.sh unroute.sh /usr/local/bin/citadel-container /usr/local/bin/tailscale-serve-reset.sh
+
+EXPOSE 11000
+ENTRYPOINT ["/sbin/tini", "--", "/usr/bin/python3", "-s", "/usr/local/bin/citadel-container"]

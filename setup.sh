@@ -1,65 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+[ "$#" -eq 0 ] || { echo 'Usage: ./setup.sh (no arguments)' >&2; exit 2; }
+SCRIPT_DIR="$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+USER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
 
-usage() {
-    cat <<'EOF'
-Usage: ./setup.sh [--show]
-       ./setup.sh --render-containerfile
-
-Default: configure CITADEL and render its user service (existing CONTAINER
-directory checkouts retain their container configuration workflow).
-
---render-containerfile copies Containerfile.example to Containerfile only.
-It does not configure, build, push, or start anything. Run from a source
-checkout; the future build context is this directory. A matching Containerfile
-is retained; move a custom or outdated Containerfile aside before regenerating.
-Compose/Quadlet generation remains the separate config.sh --render-container
-workflow; CITADEL uses the image's python3 -s webui.py startup command.
-EOF
-}
-
-for argument in "$@"; do
-    case "$argument" in
-        --help|-h) usage; exit 0 ;;
-        --render-containerfile)
-            if [ "$#" -ne 1 ]; then
-                echo "Use --render-containerfile on its own." >&2
-                exit 2
-            fi
-            template="$SCRIPT_DIR/Containerfile.example"
-            target="$SCRIPT_DIR/Containerfile"
-            if [ ! -f "$template" ]; then
-                echo "Missing Containerfile.example." >&2
-                exit 1
-            fi
-            if [ -L "$target" ] || [ -e "$target" ]; then
-                if [ ! -L "$target" ] && [ -f "$target" ] && cmp -s "$template" "$target"; then
-                    echo "  Unchanged: $target"
-                    exit 0
-                fi
-                echo "Keeping existing Containerfile; move it aside before rendering." >&2
-                exit 1
-            fi
-            # Refuse a concurrently created destination, including symlinks.
-            (set -o noclobber; cat "$template" > "$target")
-            echo "  Rendered: $target (no image build or service changes)"
-            exit 0
-            ;;
-    esac
-done
-
-if [ "$(basename "$(cd "$SCRIPT_DIR/.." && pwd -P)")" = "CONTAINER" ]; then
-    "$SCRIPT_DIR/config.sh" "$@"
-    exit 0
-fi
-
-"$SCRIPT_DIR/config.sh" --no-container "$@"
+# config.sh is hardlinked from SCRIPTS/safrano9999/config/config.sh.
+# Configure and render everything; do not build, pull, link or start services.
+"$SCRIPT_DIR/config.sh"
 "$SCRIPT_DIR/set_daemon.sh" --render-only
+mkdir -p "$SCRIPT_DIR/CADDY"
 
-printf '\nLink the rendered systemd user service:\n'
-printf '  ln -sfn %q %q\n' \
-    "$SCRIPT_DIR/citadel.service" \
-    "$USER_UNIT_DIR/citadel.service"
+printf '\nHost service (choose this OR the container):\n'
+printf '  mkdir -p %q && ln -s %q %q\n' \
+    "$USER_CONFIG_DIR/systemd/user" "$SCRIPT_DIR/citadel.service" \
+    "$USER_CONFIG_DIR/systemd/user/citadel.service"
+printf '\nContainer Quadlet:\n'
+quadlet_name="${SCRIPT_DIR##*/}"
+quadlet_name="${quadlet_name,,}"
+printf '  mkdir -p %q && ln -s %q %q\n' \
+    "$USER_CONFIG_DIR/containers/systemd" "$SCRIPT_DIR/$quadlet_name.container" \
+    "$USER_CONFIG_DIR/containers/systemd/citadel.container"
+printf '\nAfter choosing one: systemctl --user daemon-reload\n'

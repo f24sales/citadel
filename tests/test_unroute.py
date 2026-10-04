@@ -51,7 +51,7 @@ class UnrouteTests(unittest.TestCase):
         (self.root / "icons/11000.svg").write_text("<svg/>")
         self.removals = []
 
-    def run_unroute(self, live=None, ports=None, fail_ports=()):
+    def run_unroute(self, live=None, ports=None, fail_ports=(), serve=True):
         self.live = copy.deepcopy(live if live is not None else live_config())
         def remove(config, keys):
             self.removals.append(keys)
@@ -60,10 +60,19 @@ class UnrouteTests(unittest.TestCase):
             self.live = without_ports(config, keys)
             return self.live
         with (patch.object(unroute, "read_live_serve", side_effect=lambda: copy.deepcopy(self.live)),
+              patch.object(unroute, "serve_management_enabled", return_value=serve),
               patch.object(unroute, "remove_node_ports", side_effect=remove),
               patch.object(unroute.shutil, "which", return_value="tailscale"),
               patch.dict(os.environ, {"CITADEL_SCAN_LOCK_FILE": str(self.root / "scan.lock")})):
             return unroute.unroute(self.root, ports)
+
+    def test_serve_disabled_leaves_all_routes_and_metadata_untouched(self):
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        with (patch.object(unroute, "read_live_serve", side_effect=AssertionError("No Serve access")),
+              patch.object(unroute, "serve_management_enabled", return_value=False)):
+            self.assertEqual(unroute.unroute(self.root), 0)
+        self.assertEqual(self.removals, [])
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
 
     def test_release_preserves_discovery_other_urls_and_logos(self):
         self.run_unroute()

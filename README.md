@@ -136,20 +136,50 @@ A containerized proxy must be able to reach the host bind address; its own
 
 ## Containerfile and container definitions
 
-Render the image recipe without building or starting anything:
+Configure and render the host unit, Quadlet and runtime files without starting anything:
 
 ```bash
-./setup.sh --render-containerfile
+./setup.sh
 ```
 
-This copies `Containerfile.example` to `Containerfile`. A matching file is left
-unchanged; move a custom or outdated Containerfile aside before regenerating.
-Ordinary `./setup.sh` retains its configuration/service-rendering workflow.
+`setup.sh` takes no arguments and always renders both service variants, then
+prints their `ln -s` commands. Run only one variant per instance.
+
+Both definitions stay in the same project directory as `config.conf`, `.env`
+and `container.conf`. The host service reads these application settings there;
+the Quadlet injects the same `config.conf` and `.env` through absolute
+`EnvironmentFile=` paths. The generated links reference these definitions,
+not copies in another configuration directory. Configuration changes are read
+at the next service/container start; setup itself does not restart anything.
+
+The Alpine Containerfile is maintained in
+`SCRIPTS/githubactions/CITADEL/scripts/Containerfile` and synchronized to
+`.github/scripts/Containerfile`. Builds run exclusively on GitHub Actions:
+version-tag pushes or the manual **Citadel Alpine image** workflow build, test
+TCP/Unix startup, and push `ghcr.io/safrano9999/citadel:YYYY.MM.N` plus `:latest`.
+The month has two digits; `N` increments within the month. Existing image
+versions cannot be overwritten. Only the safrano9999 repository publishes images.
+
+GHCR initially creates packages as private. After the first push, set the
+`citadel` package's **Package settings → Change visibility → Public** once.
+The workflow checks visibility and fails that final check until public access
+is enabled; the successfully pushed image remains available. See
+[GitHub's visibility documentation](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+
+The image includes the scanner, WebUI, Tailscale and cloudflared. It uses a
+small supervised bootstrap, not systemd internally. Missing credentials disable
+the corresponding clients and providers. Runtime secrets are injected, never
+baked into the image. Named volumes can retain Tailscale state, logos and
+`/CITADEL` settings (`ports.filter.json` and Cloudflare managed-object metadata).
+A missing filter file is not required for WebUI startup; the scan creates an
+empty policy. The shared `CADDY` directory holds the generated Caddyfile,
+allocation ledger and optional `/CADDY/citadel.sock`. TCP is the default.
+Conditional mounts remain visible as commented `#Volume=...` lines when inactive.
 
 Use `./config.sh` to configure a container, or regenerate only Compose and
 Quadlet from existing configuration with `./config.sh --render-container`.
 The `#container-command: image` directive in `container.example` makes both
-use the image's `/usr/bin/python3 -s webui.py` command, so runtime TCP/Unix
+use the image's bootstrap entrypoint, so runtime TCP/Unix
 selection works without a Uvicorn command override. Regenerate older container
 definitions to remove that override. Neither rendering command builds, pushes,
 or starts an image; runtime secrets and scan state are not copied into the image.
@@ -219,11 +249,11 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_WEBUI_PORT` | `11000` | Dashboard port |
 | `CITADEL_HIDE_HTTP_WEBUI_DUPE` | `1` | Hide this WebUI's HTTP tile only while the same instance also responds successfully over HTTPS |
 | `CADDYFILE_START` | empty | First generated HTTPS frontend port; empty/0 disables export |
-| `CADDYFILE_STEPS` | `1` | Exported port increment; empty also means 1 |
+| `CADDYFILE_STEPS` | `1` | Explicit positive increment retains assignments; empty/blank uses 1 and rebuilds assignments each scan |
 | `CITADEL_TOKEN` | generated | Optional token protecting Cloudflare edits in the dashboard |
-| `CITADEL_SUBNET_IP` | empty | Address used for subnet routes and the Cloudflare origin |
+| `CITADEL_SUBNET_IP` | empty | Address used only for subnet routes; Cloudflare always targets localhost |
 | `CITADEL_HTTPS_ONLY` | `0` | When enabled, route only services that already speak HTTPS on localhost; HTTP services remain visible |
-| `CITADEL_PERSISTENT` | `0` | Reset/rebuild Tailscale Serve routes per scan; 1 retains routes and enables policy/state persistence |
+| `CITADEL_TAILSCALE_SERVE` | `1` | Reset/rebuild Serve each scan; 0 leaves Serve untouched and verifies direct HTTPS links |
 | `CITADEL_LOGO_PERSISTENT` | `1` | Retain logos independently; service metadata is always rescanned |
 | `CITADEL_USER_AGENT` | `Mozilla/5.0 (compatible; CITADEL/1.0)` | HTTP probe user agent |
 | `CITADEL_CLOUDFLARE_DOMAIN` | empty | DNS suffix used for generated hostnames |
@@ -234,7 +264,7 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_CLOUDFLARE_TUNNEL_ID` | empty | Existing named Tunnel ID |
 | `CLOUDFLARE_API_TOKEN` | empty | Scoped Cloudflare API token |
 | `CLOUDFLARE_EMAIL` | empty | Default Access email allowlist |
-| `TUNNEL_TOKEN` | empty | Token consumed by the separately managed connector |
+| `CLOUDFLARE_TUNNEL_TOKEN` | empty | Token consumed by the separately managed connector |
 
 Non-secret service settings belong in `config.conf`. Secrets belong in `.env`,
 which is ignored by Git.
@@ -276,16 +306,11 @@ A non-empty whitelist takes precedence. Otherwise the blacklist is applied.
 
 ### Persistent Fedora container state
 
-The merged Fedora container setup asks for `CITADEL_PERSISTENT`, default `0`.
-When explicitly enabled, the generated container mounts the instance-specific
-named volume `<container>-citadel` at `/named_volumes/CITADEL`.
-
-The volume stores only mutable runtime state. Provider code and configuration
-remain in the installed plugin directory, so image updates are never hidden by
-the volume. Links generated during container initialization migrate existing
-files once where present and are safe to recreate. The initially absent
-`tailscale.json` uses a direct link so its first atomic write creates valid JSON
-instead of an empty placeholder:
+Mounts and volumes are configured separately at the container/Quadlet level.
+Neither `CITADEL_TAILSCALE_SERVE` nor `CITADEL_LOGO_PERSISTENT` generates mounts.
+The old `CITADEL_PERSISTENT` setting has been removed without an alias.
+Existing mounts are not removed by changing a runtime flag.
+Useful state paths to retain across container recreation include:
 
 ```text
 ports.filter.json
@@ -293,15 +318,12 @@ extensions/enabled/cloudflare/routes.json
 tailscale.json
 ```
 
-Without persistence, CITADEL reads and writes these paths directly below its
-own plugin directory. With persistence, atomic replacements resolve the link
-target and stay inside the named volume.
-
-Logos are independent: `CITADEL_LOGO_PERSISTENT=1` retains `icons/` between
-scans and adds a separate `<container>-citadel-logos` volume in generated
-container configurations. Setting it to `0` refreshes icons during each scan
-and omits that volume. Listener discovery, titles and routes are rebuilt on
-every scan; logo reuse never skips probing a service.
+CITADEL writes in its own directory or follows explicitly configured state
+symlinks into volumes. Provider code should not be hidden by a state mount.
+`CITADEL_LOGO_PERSISTENT=1` reuses downloaded icons between scans. With `0`,
+HTML services get a fresh download attempt; successful downloads replace that
+port's icon, failed downloads leave the previous icon available. The icon
+directory is not cleared. Discovery, titles and route results are always fresh.
 
 ## Extensions: URL providers and file exporters
 
@@ -354,8 +376,13 @@ permissions. Both Caddys on a node can use the same daemon and certificate.
 The generated file does not embed certs,
 keys, self-signed workarounds, or disable HTTPS upstream verification.
 
-Backend ports receive sequential slots beginning at START, incremented by
-STEPS. `caddyfile/ports.json` remembers only this numeric mapping: newly
+Backend ports receive sequential slots beginning at START. Empty/blank START
+or START=0 disables export without deleting existing artifacts.
+With empty/blank STEPS, every scan assigns currently discovered ports afresh in
+numeric order, incrementing by 1. The old allocation ledger is not read and is
+removed only after a new Caddyfile is successfully written.
+With explicit positive STEPS (including 1), `caddyfile/ports.json` remembers
+the numeric mapping: newly
 discovered ports append, disappeared ports keep their slots, and titles,
 icons, and process identities are not used to recognize services. Preserve
 this directory across container recreation. Changing START/STEPS requires
@@ -400,7 +427,7 @@ into the export).
 bind-mounted init directory, alongside these instance-specific inputs:
 
 - `instance.conf`: service environment, including `CADDYFILE_START=4000`,
-  `CADDYFILE_STEPS=1`, `CITADEL_PERSISTENT=0`, and `CITADEL_LOGO_PERSISTENT=1`.
+  `CADDYFILE_STEPS=1`, `CITADEL_TAILSCALE_SERVE=1`, and `CITADEL_LOGO_PERSISTENT=1`.
 - `export-config.json`: the consuming Caddy's hostnames and the source
   container's reachable Podman-network name as `backend`.
 - `service.conf`: a systemd drop-in with `After=fedora45-ai-init-hooks.service`
@@ -428,14 +455,14 @@ Caddy validation/reload separately.
 
 ### Tailscale
 
-CITADEL owns the node's Tailscale Serve configuration when the Tailscale
-extension is in `extensions/enabled` and its manifest is enabled. There is no
-separate environment switch. It checks the daemon and makes one bounded,
+CITADEL's Tailscale extension runs when it is in `extensions/enabled` and its
+manifest is enabled. `CITADEL_TAILSCALE_SERVE` controls Serve management, not
+extension activation. It checks the daemon and makes one bounded,
 noninteractive start attempt when necessary, then checks again. Missing CLI,
 login requirements or failed startup produce an error instead of retry loops
 or fabricated URLs.
 
-With `CITADEL_PERSISTENT=0` (default), after validating discovery and the running
+With `CITADEL_TAILSCALE_SERVE=1` (default), after validating discovery and the running
 node, every Tailscale scan runs
 `tailscale serve reset` and rebuilds the currently discovered ports 1:1 using
 **HTTPS only**. This deliberately replaces manual/foreign Serve routes too,
@@ -443,13 +470,23 @@ including their HTTP handlers and Funnel configuration. Existing connections
 may be interrupted during a rebuild. Do not share this node's Serve configuration
 with another route manager.
 
-With `CITADEL_PERSISTENT=1`, existing matching HTTPS routes are reused instead
-of resetting the node. Conflicting routes on discovered ports are replaced.
-Unobserved ports stay configured but are not advertised as current dashboard
-services. Neither mode reuses stale service discovery or needs an ownership
-ledger.
+With `CITADEL_TAILSCALE_SERVE=0`, no Serve commands or configuration writes run,
+including via `unroute.sh`. HTTPS endpoints are probed directly on the node's
+Tailscale IP with hostname/certificate verification, then published as direct
+links. HTTP-only backends are not advertised as HTTPS. Existing Serve routes
+are not cleared merely by setting this flag. Node-level systemd reset hooks
+are independent of this scan setting.
 
-Both HTTP on `127.0.0.1:4096` and HTTPS on `127.0.0.1:2000` receive HTTPS on
+`TAILSCALE_SERVE_RESET=1` enables a separate bootstrap reset after successful
+`tailscale-up.service` startup, before the container WebUI. Any other value,
+including missing/empty/0, does nothing. It clears **all** Serve/Funnel routes
+on that Tailscale node, not its identity or Tailscale SSH. A WebUI restart alone
+does not run it. The shared helper and unit drop-in are hardlinked from
+`SCRIPTS/safrano9999-lib/tailscale/`, also used by Fedora Core-pre. The current
+Alpine image invokes the same helper after Tailscale is ready and before WebUI
+startup. Restarting that entire container repeats its bootstrap.
+
+With Serve enabled, both HTTP on `127.0.0.1:4096` and HTTPS on `127.0.0.1:2000` receive HTTPS on
 `<node>.ts.net:4096` and `<node>.ts.net:2000`, respectively. There is no public
 HTTP fallback, second port range, ownership ledger, or service identity matching.
 An internal HTTP backend is still allowed. HTTPS backends remain encrypted on
@@ -511,6 +548,9 @@ Release selected Serve ports with:
 With no port arguments, `unroute.sh` uses `CITADEL_WEBUI_PORT`. It never runs a
 global Tailscale Serve reset.
 
+With `CITADEL_TAILSCALE_SERVE=0`, `unroute.sh` is a no-op: neither the daemon's
+Serve configuration nor cached direct links are touched.
+
 ### Cloudflare
 
 Cloudflare runs when its extension is in `extensions/enabled`, its manifest is
@@ -522,6 +562,11 @@ invalid tokens or incomplete required configuration are reported. It manages:
 - DNS records for discovered services;
 - ingress entries on an existing named Tunnel;
 - optional Cloudflare Access email policies.
+
+Every scan builds the managed ingress afresh from current discovery, targeting
+`127.0.0.1:<original-port>` with the discovered HTTP/HTTPS scheme. Disappeared
+managed routes are removed. There is no persistence or port-range switch;
+saved resource IDs are used only to update and clean up owned DNS/Access objects.
 
 It preserves unrelated DNS records, Access resources, and Tunnel ingress
 rules. See [CITADEL_CLOUDFLARE.md](CITADEL_CLOUDFLARE.md) for the required API
