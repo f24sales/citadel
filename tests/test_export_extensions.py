@@ -56,10 +56,10 @@ class ExportFixture(unittest.TestCase):
         self.manifest()
         artifacts = []
         if configured:
-            artifact = self.base / "caddyfile/Caddyfile"
+            artifact = self.base / "CADDY/Caddyfile"
             artifact.parent.mkdir(exist_ok=True)
             artifact.write_bytes(content)
-            artifacts = [{"path": "caddyfile/Caddyfile", "sha256": hashlib.sha256(content).hexdigest()}]
+            artifacts = [{"path": "CADDY/Caddyfile", "sha256": hashlib.sha256(content).hexdigest()}]
         status = {
             "provider_id": "caddy", "label": "Caddy", "kind": "export",
             "considered": configured, "available": configured,
@@ -67,7 +67,7 @@ class ExportFixture(unittest.TestCase):
             "artifacts": artifacts,
         }
         if configured:
-            status.update(generated_file="caddyfile/Caddyfile", mappings_count=1)
+            status.update(generated_file="CADDY/Caddyfile", mappings_count=1)
         status.update(overrides)
         self.write("extensions/enabled/caddy/status.json", status)
         return status
@@ -99,8 +99,8 @@ class ExportDispatchTests(ExportFixture):
             "provider_id": "caddy", "label": "Caddy", "kind": "export",
             "considered": True, "available": True, "services": {}, "errors": [],
             "generated_at": "2026-10-02T12:00:00Z", "mappings_count": 0,
-            "generated_file": "caddyfile/Caddyfile",
-            "artifacts": [{"path": "caddyfile/Caddyfile", "sha256": hashlib.sha256(b"").hexdigest()}],
+            "generated_file": "CADDY/Caddyfile",
+            "artifacts": [{"path": "CADDY/Caddyfile", "sha256": hashlib.sha256(b"").hexdigest()}],
         }
 
     def run_dispatch(self, *extra, returncode=0, payload=None):
@@ -186,7 +186,7 @@ class ExportDispatchTests(ExportFixture):
         self.assertEqual(code, 0)
         self.assertEqual(state["considered_exports"], [])
         self.assertEqual(state["available_providers"], [])
-        self.assertFalse((self.base / "caddyfile/Caddyfile").exists())
+        self.assertFalse((self.base / "CADDY/Caddyfile").exists())
 
     def test_disabled_export_is_not_executed(self):
         self.manifest(enabled=False)
@@ -446,7 +446,7 @@ class ExportHealthTests(ExportFixture):
         entry = self.result()["extensions"][0]
         self.assertEqual(entry["status"], "SKIP")
         self.assertEqual(entry["artifacts"], [])
-        self.assertFalse((self.base / "caddyfile/Caddyfile").exists())
+        self.assertFalse((self.base / "CADDY/Caddyfile").exists())
 
     def test_disabled_or_absent_export_skips_without_status_file(self):
         self.manifest(enabled=False)
@@ -462,21 +462,21 @@ class ExportHealthTests(ExportFixture):
 
     def test_hash_mismatch_fails(self):
         self.export()
-        (self.base / "caddyfile/Caddyfile").write_text("changed")
+        (self.base / "CADDY/Caddyfile").write_text("changed")
         result = self.result()
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("mismatch", result["extensions"][0]["artifacts"][0]["detail"])
 
     def test_missing_or_directory_artifact_fails(self):
         self.export()
-        artifact = self.base / "caddyfile/Caddyfile"
+        artifact = self.base / "CADDY/Caddyfile"
         artifact.unlink()
         self.assertEqual(self.result()["status"], "FAIL")
         artifact.mkdir()
         self.assertEqual(self.result()["status"], "FAIL")
 
     def test_artifact_path_traversal_and_absolute_paths_fail(self):
-        for path in ("../Caddyfile", "caddyfile/../caddyfile/Caddyfile", str(self.base / "caddyfile/Caddyfile"),
+        for path in ("../Caddyfile", "CADDY/../CADDY/Caddyfile", str(self.base / "CADDY/Caddyfile"),
                      "..\\Caddyfile", "", "bad\x00path"):
             with self.subTest(path=path):
                 self.export(artifacts=[{"path": path, "sha256": hashlib.sha256(b"").hexdigest()}])
@@ -487,7 +487,7 @@ class ExportHealthTests(ExportFixture):
         with tempfile.TemporaryDirectory() as outside:
             target = Path(outside) / "Caddyfile"
             target.write_bytes(b"")
-            artifact = self.base / "caddyfile/Caddyfile"
+            artifact = self.base / "CADDY/Caddyfile"
             artifact.unlink()
             artifact.symlink_to(target)
             result = self.result()
@@ -497,8 +497,8 @@ class ExportHealthTests(ExportFixture):
     def test_caddy_output_directory_can_be_shared_through_a_link(self):
         self.export()
         with tempfile.TemporaryDirectory() as shared:
-            original = self.base / "caddyfile"
-            target = Path(shared) / "caddyfile"
+            original = self.base / "CADDY"
+            target = Path(shared) / "CADDY"
             original.rename(target)
             original.symlink_to(target, target_is_directory=True)
             self.assertEqual(self.result()["status"], "PASS")
@@ -509,7 +509,7 @@ class ExportHealthTests(ExportFixture):
             self.assertEqual(self.result()["status"], "FAIL")
 
     def test_invalid_or_empty_artifact_metadata_fails(self):
-        for artifacts in ([], None, {}, [None], [{}], [{"path": "caddyfile/Caddyfile", "sha256": "bad"}]):
+        for artifacts in ([], None, {}, [None], [{}], [{"path": "CADDY/Caddyfile", "sha256": "bad"}]):
             with self.subTest(artifacts=artifacts):
                 self.export(artifacts=artifacts)
                 self.assertEqual(self.result()["status"], "FAIL")

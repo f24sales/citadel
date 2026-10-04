@@ -58,9 +58,9 @@ def check_artifacts(base: Path, artifacts: object, *, caddy_export: bool = False
         try:
             target = (root / path).resolve()
             shared_caddy_file = (
-                caddy_export and path == "caddyfile/Caddyfile"
+                caddy_export and path == "CADDY/Caddyfile"
                 and not (root / path).is_symlink()
-                and target.parent == (root / "caddyfile").resolve()
+                and target.parent == (root / "CADDY").resolve()
             )
             if not target.is_relative_to(root) and not shared_caddy_file:
                 record["detail"] = "Artifact path escapes the repository"

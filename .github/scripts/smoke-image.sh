@@ -34,9 +34,9 @@ docker rm -f "$name" >/dev/null
 # The same image, Unix mode; settings survive recreation, socket shares CADDY.
 docker volume create "$state" >/dev/null
 start --env CITADEL_WEBUI_TRANSPORT=unix --env CITADEL_WEBUI_SOCKET= \
-    --mount "type=bind,source=$shared,target=/CADDY" \
+    --mount "type=bind,source=$shared,target=/opt/safrano9999/CITADEL/CADDY" \
     --mount "type=volume,source=$state,target=/CITADEL"
-check_ready --unix-socket /CADDY/citadel.sock http://localhost/
+check_ready --unix-socket /opt/safrano9999/CITADEL/CADDY/citadel.sock http://localhost/
 for attempt in $(seq 1 45); do
     if docker logs "$name" 2>&1 | grep -Fq 'initial scan finished: 0'; then break; fi
     sleep 1

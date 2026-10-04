@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import shlex
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -119,29 +118,11 @@ def start_cloudflare(runtime, root):
         runtime.start("cloudflared", "tunnel", "--no-autoupdate", "run", "--token-file", str(path))
 
 
-def webui_ready():
-    from webui_transport import unix_socket_path
-    path = unix_socket_path()
-    try:
-        if path is not None:
-            with socket.socket(socket.AF_UNIX) as connection:
-                connection.settimeout(0.5)
-                connection.connect(str(path))
-        else:
-            host = os.environ.get("FASTAPI_HOST", "127.0.0.1")
-            host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
-            with socket.create_connection((host, int(os.environ.get("CITADEL_WEBUI_PORT", "11000"))), timeout=0.5):
-                pass
-        return True
-    except OSError:
-        return False
-
-
 def main():
     os.chdir(ROOT)
     sys.path[:0] = [str(ROOT), str(ROOT / "functions"), str(ROOT / "functions/providers")]
     import python_header  # Load shared config; never source/eval user input.
-    os.environ["CITADEL_WEBUI_SOCKET"] = os.environ.get("CITADEL_WEBUI_SOCKET") or "/CADDY/citadel.sock"
+    from webui_transport import listener_ready
     Path("/run/citadel").mkdir(parents=True, exist_ok=True)
     runtime = Runtime()
     def stop(*_):
@@ -154,7 +135,7 @@ def main():
         start_tailscale(runtime, ROOT)
         start_cloudflare(runtime, ROOT)
         runtime.start(sys.executable, "-s", str(ROOT / "webui.py"))
-        runtime.wait_ready(webui_ready)
+        runtime.wait_ready(listener_ready)
         scan = subprocess.Popen(["/bin/bash", str(ROOT / "scan.sh")])
         while True:
             runtime.check()

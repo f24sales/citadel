@@ -2535,6 +2535,7 @@ generate_container_files() {
     local -a additional_lines=()
     local item source container_nr_value command_mode compose_volume rules active
     local tunnel_only=false
+    local registry_autoupdate=true
     local publish_port_declared=false
 
     container_nr_value="$(config_value CONTAINER_NR || true)"
@@ -2734,6 +2735,10 @@ generate_container_files() {
     add_sqlite_volume_mounts
     add_optional_persistence_mounts
 
+    for item in "${additional_lines[@]}"; do
+        [[ "$item" != Pull=never ]] || registry_autoupdate=false
+    done
+
     if [ "$tunnel_only" != "true" ] && [ "$publish_port_declared" != "true" ] \
         && [ "${#ports[@]}" -eq 0 ] && [ -n "$first_port" ]; then
         add_unique "${host}:${first_port}:${first_port}" ports
@@ -2762,8 +2767,12 @@ generate_container_files() {
         fi
         printf '    # Container image from config or existing generated file\n'
         printf '    image: %s\n' "$image"
-        printf '    labels:\n'
-        printf '      - "io.containers.autoupdate=registry"\n'
+        if $registry_autoupdate; then
+            printf '    labels:\n'
+            printf '      - "io.containers.autoupdate=registry"\n'
+        else
+            printf '    pull_policy: never\n'
+        fi
         printf '    container_name: %s\n' "$CONTAINER_NAME"
         printf '    hostname: %s\n' "$CONTAINER_NAME"
         if [ "${#ports[@]}" -gt 0 ]; then
@@ -2845,7 +2854,8 @@ generate_container_files() {
         [ "${#devices[@]}" -gt 0 ] && printf '# Device mappings from *_DEVICES in config.conf\n'
         for item in "${devices[@]}"; do printf 'AddDevice=%s\n' "$item"; done
         for item in "${additional_lines[@]}"; do printf '%s\n' "$item"; done
-        printf 'AutoUpdate=registry\n\n'
+        if $registry_autoupdate; then printf 'AutoUpdate=registry\n'; fi
+        printf '\n'
         printf '[Service]\n'
         printf 'Restart=always\n'
         printf 'TimeoutStartSec=30\n\n'

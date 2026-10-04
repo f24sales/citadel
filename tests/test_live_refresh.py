@@ -92,7 +92,7 @@ class LiveRefreshTests(unittest.TestCase):
         self.assertFalse((self.old / "legacy.py").exists())
         self.assertEqual(len(list(self.root.glob(".CITADEL-backup-*"))), 1)
         self.assertEqual((self.export / "ports.json").read_text(), '{"preserve": 4000}')
-        self.assertEqual(os.readlink(self.old / "caddyfile"), str(self.export))
+        self.assertEqual(os.readlink(self.old / "CADDY"), str(self.export))
         self.assertFalse(any(command[1:2] in (["start"], ["stop"], ["restart"]) for command in self.calls))
         for unit in refresh.UNITS:
             self.assertIn("Environment=CITADEL_TAILSCALE_SERVE=1", (self.args.unit_dir / f"{unit}.d/95-citadel-instance.conf").read_text())

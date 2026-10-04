@@ -26,7 +26,7 @@ from python_header import get, get_port  # noqa: F401
 
 import core
 import health
-from webui_transport import bind_unix_socket, unix_socket_path
+from webui_transport import bind_unix_socket, unix_socket_path, probe_target
 
 
 class EditTokenGuard:
@@ -242,13 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         if path is None:
             host, port = core.load_server_config()
         if arguments.wait_ready:
-            if path is None:
-                probe_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
-                target = ["tcp", probe_host, str(port)]
-            else:
-                target = ["unix", str(path)]
             return subprocess.run(
-                [arguments.wait_ready, "--timeout", "60", *target], check=False,
+                [arguments.wait_ready, "--timeout", "60", *probe_target()], check=False,
             ).returncode
         if path is None:
             uvicorn.run(app, host=host, port=port)

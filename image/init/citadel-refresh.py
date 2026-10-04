@@ -234,9 +234,9 @@ def prepare_tree(old, staged, export_dir, settings, export_content):
     if caddy is None:
         raise RuntimeError("Clone has no Caddy exporter extension")
     atomic_write(caddy / "config.json", export_content, 0o644)
-    link = staged / "caddyfile"
+    link = staged / "CADDY"
     if exists(link):
-        raise RuntimeError("Clone unexpectedly contains caddyfile runtime output")
+        raise RuntimeError("Clone unexpectedly contains CADDY runtime output")
     link.symlink_to(export_dir, target_is_directory=True)
 
 
@@ -253,7 +253,7 @@ def same_installation(old, staged):
         left, right = old / relative, staged / relative
         if left.exists() != right.exists() or (left.exists() and left.read_bytes() != right.read_bytes()):
             return False
-    return (old / "caddyfile").is_symlink() and os.readlink(old / "caddyfile") == os.readlink(staged / "caddyfile")
+    return (old / "CADDY").is_symlink() and os.readlink(old / "CADDY") == os.readlink(staged / "CADDY")
 
 
 @contextmanager
@@ -371,7 +371,7 @@ def main(argv=None):
     parser.add_argument("--unit-dir", type=Path, default=Path("/etc/systemd/system"))
     parser.add_argument("--live", action="store_true", help="restart only the WebUI after installation")
     args = parser.parse_args(argv)
-    args.export_dir = args.export_dir or args.instance_dir / "caddyfile"
+    args.export_dir = args.export_dir or args.instance_dir / "CADDY"
     for path in (args.source, args.export_dir, args.unit_dir, args.instance_dir):
         if not path.is_absolute() or ".." in path.parts:
             parser.error("paths must be absolute and contain no '..'")

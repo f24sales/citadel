@@ -22,7 +22,7 @@ extensions/providers_state.json
 extensions/enabled/*/routes.json
 extensions/enabled/*/status.json
 extensions/disabled/*/status.json
-/caddyfile/
+/CADDY/
 extensions/enabled/*/config.ini
 extensions/disabled/*/config.ini
 

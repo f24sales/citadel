@@ -2,8 +2,8 @@
 #choices: tcp unix
 CITADEL_WEBUI_TRANSPORT=tcp
 
-# Unix transport only. Empty uses $XDG_RUNTIME_DIR/citadel/citadel.sock,
-# or /run/citadel/citadel.sock when XDG_RUNTIME_DIR is not set.
+# Unix transport only. Empty uses CADDY/citadel.sock inside this repository,
+# identically for the host service and container. Absolute overrides are optional.
 #when: CITADEL_WEBUI_TRANSPORT=unix
 CITADEL_WEBUI_SOCKET=
 

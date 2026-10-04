@@ -92,7 +92,7 @@ class SetupContainerfileTests(unittest.TestCase):
         for name in ("config.sh", "config.conf_example", "container.example"):
             shutil.copy2(ROOT / name, self.root / name)
         (self.root / "config.conf").write_text("CITADEL_WEBUI_PORT=11000\nCITADEL_WEBUI_TRANSPORT=unix\n")
-        (self.root / "container.conf").write_text("CITADEL_WEBUI_PUBLISH_PORT=\n")
+        (self.root / "container.conf").write_text("CITADEL_WEBUI_PUBLISH_PORT=\nADDITIONAL_LINE=Pull=never\n")
         (self.root / ".env").write_text("TS_AUTHKEY=\n")
         result = subprocess.run(["bash", str(self.root / "config.sh"), "--render-container"],
                                 cwd=self.root, env=self.environment, stdin=subprocess.DEVNULL,
@@ -101,7 +101,10 @@ class SetupContainerfileTests(unittest.TestCase):
         quadlet = (self.root / "citadel.container").read_text()
         self.assertNotIn("Exec=", quadlet)
         self.assertNotIn("PublishPort=", quadlet)
-        self.assertIn(f"Volume={self.root}/CADDY:/CADDY:z", quadlet)
+        self.assertIn("Pull=never", quadlet)
+        self.assertNotIn("AutoUpdate=", quadlet)
+        self.assertIn("pull_policy: never", (self.root / "docker-compose.yml").read_text())
+        self.assertIn(f"Volume={self.root}/CADDY:/opt/safrano9999/CITADEL/CADDY:z", quadlet)
         self.assertIn("#Volume=citadel-tailscale:/var/lib/tailscale:Z", quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / "config.conf"), quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / ".env"), quadlet)

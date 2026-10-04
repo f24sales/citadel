@@ -19,7 +19,7 @@ def canonical(tag):
     return f"{year}.{month:02d}.{number}"
 
 
-def select_version(tags, requested="", now=None):
+def select_version(tags, requested="", now=None, replace_existing=False):
     versions = {canonical(tag) for tag in tags if VERSION.fullmatch(tag)}
     if requested:
         version = canonical(requested)
@@ -27,7 +27,7 @@ def select_version(tags, requested="", now=None):
         month = (now or datetime.now(timezone.utc)).strftime("%Y.%m.")
         numbers = [int(tag.rsplit(".", 1)[1]) for tag in versions if tag.startswith(month)]
         version = month + str(max(numbers, default=0) + 1)
-    if version in versions:
+    if version in versions and not (requested and replace_existing):
         raise ValueError(f"Refusing to overwrite existing image version: {version}")
     return version
 
@@ -41,7 +41,8 @@ def main():
     if result.returncode and "(HTTP 404)" not in result.stderr:
         raise RuntimeError("Cannot read GHCR versions; refusing to guess a version")
     tags = result.stdout.splitlines() if result.returncode == 0 else []
-    print(select_version(tags, os.environ.get("IMAGE_TAG", "")))
+    print(select_version(tags, os.environ.get("IMAGE_TAG", ""),
+                         replace_existing=os.environ.get("REPLACE_EXISTING") == "true"))
 
 
 if __name__ == "__main__":

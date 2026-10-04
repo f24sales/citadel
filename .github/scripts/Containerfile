@@ -20,8 +20,7 @@ RUN apk add --no-cache \
  && python3 -s -c 'import dotenv, fastapi, jinja2, uvicorn'
 
 WORKDIR /opt/safrano9999/CITADEL
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 FASTAPI_HOST=0.0.0.0 \
-    CITADEL_WEBUI_SOCKET=/CADDY/citadel.sock
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 FASTAPI_HOST=0.0.0.0
 
 # Source allowlist: no runtime configuration, credentials, cached scans or logos.
 COPY webui.py python_header.py scan.sh unroute.sh requirements.txt config.conf_example config.ini.example env.example citadel.svg ./
@@ -40,8 +39,7 @@ COPY image/runtime/usr/local/bin/tailscale-serve-reset.sh /usr/local/bin/
 COPY container/entrypoint.py /usr/local/bin/citadel-container
 
 # Mutable settings only; atomic_write_json follows these links when updating.
-RUN mkdir -p icons cache /CADDY /CITADEL extensions/disabled /var/lib/tailscale /run/citadel \
- && ln -s /CADDY caddyfile \
+RUN mkdir -p icons cache CADDY /CITADEL extensions/disabled /var/lib/tailscale /run/citadel \
  && ln -s /CITADEL/ports.filter.json ports.filter.json \
  && ln -s /CITADEL/cloudflare-routes.json extensions/enabled/cloudflare/routes.json \
  && chmod 0755 scan.sh unroute.sh /usr/local/bin/citadel-container /usr/local/bin/tailscale-serve-reset.sh

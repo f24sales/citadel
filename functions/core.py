@@ -6,6 +6,7 @@ No Flask/HTTP dependencies. Returns plain dicts/lists.
 import json
 import os
 from pathlib import Path
+from webui_transport import tcp_address
 
 from cloudflare_policy import (
     cloudflare_rules,
@@ -113,12 +114,7 @@ def _cloudflare_default_emails() -> list[str]:
 
 def load_server_config() -> tuple[str, int]:
     """Read host/port from the already loaded environment."""
-    host = os.environ.get("FASTAPI_HOST") or "127.0.0.1"
-    port = int(os.environ.get("CITADEL_WEBUI_PORT", "11000") or "11000")
-    if not (1 <= port <= 65535):
-        raise ValueError("CITADEL_WEBUI_PORT must be 1-65535.")
-
-    return host, port
+    return tcp_address()
 
 
 # ── Provider Discovery ────────────────────────────────────────────────────

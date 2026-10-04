@@ -1,8 +1,8 @@
 # Keep the image bootstrap: Tailscale, optional reset, Cloudflared, WebUI, scan.
 #container-command: image
 
-# Built only by GitHub Actions. Pin a tested YYYY.MM.N tag/digest before deployment;
-# pull exclusively through Smart1.
+# Built only by GitHub Actions; latest tracks the newest successful image.
+# Pull exclusively through Smart1.
 IMAGE=ghcr.io/safrano9999/citadel:latest
 
 # Volume naming; the Quadlet name comes from the checkout directory.
@@ -31,10 +31,14 @@ CITADEL_LOGOS_VOLUMES=${CONTAINER_NAME}-logos:/opt/safrano9999/CITADEL/icons:Z
 CITADEL_VOLUMES=${CONTAINER_NAME}-citadel:/CITADEL:Z
 
 # Share with Caddy read-only (:ro,z there): Caddyfile, ports.json and optional
-# citadel.sock. The image uses /CADDY/citadel.sock when Unix mode is selected.
+# citadel.sock. Both runtimes use their own repository's CADDY directory.
 #volume-if: CADDY_VOLUMES CADDYFILE_START>0 CITADEL_WEBUI_TRANSPORT=unix
-#default-preset: ./CADDY:/CADDY:z
-CADDY_VOLUMES=./CADDY:/CADDY:z
+#default-preset: ./CADDY:/opt/safrano9999/CITADEL/CADDY:z
+CADDY_VOLUMES=./CADDY:/opt/safrano9999/CITADEL/CADDY:z
+
+# Use the same exporter settings as the host service, never a second copy.
+#volume-if: CADDY_CONFIG_VOLUMES CADDYFILE_START>0
+CADDY_CONFIG_VOLUMES=./extensions/enabled/caddy/config.json:/opt/safrano9999/CITADEL/extensions/enabled/caddy/config.json:ro,z
 
 # May be blank for a mounted host Tailscale socket or TS_USERSPACE=1.
 CITADEL_CAPABILITIES=NET_ADMIN,NET_RAW
@@ -44,4 +48,4 @@ CITADEL_DEVICES=/dev/net/tun
 # With host networking, also mount the host Tailscale socket to reuse its daemon.
 #repeat-group: ADDITIONAL_LINE suffix02 ADDITIONAL_LINE
 #repeat-freeform: ADDITIONAL_LINE
-ADDITIONAL_LINE=
+ADDITIONAL_LINE=Pull=never

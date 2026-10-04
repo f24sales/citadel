@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import webui
-from webui_transport import bind_unix_socket, unix_socket_path
+from webui_transport import bind_unix_socket, unix_socket_path, listener_ready, probe_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +47,8 @@ class TransportSelectionTests(unittest.TestCase):
                 if value is not None:
                     environment["CITADEL_WEBUI_SOCKET"] = value
                 with self.subTest(runtime=runtime, value=value):
-                    self.assertEqual(unix_socket_path(environment), Path(expected) / "citadel/citadel.sock")
+                    target = Path(expected) / "citadel/citadel.sock" if value else ROOT / "CADDY/citadel.sock"
+                    self.assertEqual(unix_socket_path(environment), target)
 
     def test_explicit_unix_does_not_depend_on_runtime_or_container(self):
         self.assertEqual(unix_socket_path({
@@ -63,7 +64,15 @@ class TransportSelectionTests(unittest.TestCase):
             with self.subTest(path=value), self.assertRaisesRegex(ValueError, "CITADEL_WEBUI_SOCKET"):
                 unix_socket_path({"CITADEL_WEBUI_TRANSPORT": "unix", "CITADEL_WEBUI_SOCKET": value})
         with self.assertRaisesRegex(ValueError, "XDG_RUNTIME_DIR"):
-            unix_socket_path({"CITADEL_WEBUI_TRANSPORT": "unix", "XDG_RUNTIME_DIR": "relative"})
+            unix_socket_path({"CITADEL_WEBUI_TRANSPORT": "unix", "CITADEL_WEBUI_SOCKET": "%t/citadel.sock", "XDG_RUNTIME_DIR": "relative"})
+
+    def test_readiness_and_start_share_defaults(self):
+        with patch.dict(os.environ, {"CITADEL_WEBUI_TRANSPORT": "unix"}, clear=True):
+            self.assertEqual(probe_target(), ["unix", str(ROOT / "CADDY/citadel.sock")])
+        with patch.dict(os.environ, {"FASTAPI_HOST": "::", "CITADEL_WEBUI_PORT": "12000"}, clear=True):
+            with patch("webui_transport.socket.create_connection") as connect:
+                self.assertTrue(listener_ready())
+                connect.assert_called_once_with(("::1", 12000), timeout=0.5)
 
     def test_invalid_configuration_exits_before_starting_uvicorn(self):
         with patch.dict(os.environ, {"CITADEL_WEBUI_TRANSPORT": "invalid"}, clear=True):

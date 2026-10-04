@@ -36,7 +36,7 @@ class CaddyExportTests(unittest.TestCase):
         return caddy.export(self.root, self.provider, start, steps)
 
     def mapping(self):
-        return json.loads((self.root / "caddyfile/ports.json").read_text())["ports"]
+        return json.loads((self.root / "CADDY/ports.json").read_text())["ports"]
 
     def test_disabled_does_not_create_directory_or_require_valid_settings(self):
         (self.provider / "config.json").unlink()
@@ -46,7 +46,7 @@ class CaddyExportTests(unittest.TestCase):
                 result = self.run_export(start, "invalid")
                 self.assertFalse(result["considered"])
                 self.assertEqual(result["errors"], [])
-                self.assertFalse((self.root / "caddyfile").exists())
+                self.assertFalse((self.root / "CADDY").exists())
 
     def test_explicit_one_remembers_assignments_and_only_writes_files(self):
         with patch("subprocess.run", side_effect=AssertionError("No processes")):
@@ -55,7 +55,7 @@ class CaddyExportTests(unittest.TestCase):
         self.assertEqual(result["services"], {})
         self.assertEqual(result["kind"], "export")
         self.assertEqual(self.mapping(), {"9090": 4000, "11000": 4001})
-        text = (self.root / "caddyfile/Caddyfile").read_text()
+        text = (self.root / "CADDY/Caddyfile").read_text()
         self.assertIn("https://node.example.ts.net:4000, https://localhost:4000", text)
         self.assertIn("reverse_proxy http://ucore:11000", text)
         self.assertNotIn("tls_insecure_skip_verify", text)
@@ -69,15 +69,15 @@ class CaddyExportTests(unittest.TestCase):
                 self.services([4096, 11000])
                 result = self.run_export(steps=steps)
                 self.assertEqual(result["errors"], [])
-                self.assertFalse((self.root / "caddyfile/ports.json").exists())
-                text = (self.root / "caddyfile/Caddyfile").read_text()
+                self.assertFalse((self.root / "CADDY/ports.json").exists())
+                text = (self.root / "CADDY/Caddyfile").read_text()
                 self.assertIn("# backend 4096 -> HTTPS 4000", text)
                 self.assertIn("# backend 11000 -> HTTPS 4001", text)
                 self.assertNotIn("9090", text)
 
     def test_fresh_mode_can_replace_corrupt_ledger_but_preserves_it_on_invalid_scan(self):
         self.run_export()
-        ledger = self.root / "caddyfile/ports.json"
+        ledger = self.root / "CADDY/ports.json"
         ledger.write_text("broken")
         self.services([4096])
         self.assertEqual(self.run_export(steps="")["errors"], [])
@@ -94,7 +94,7 @@ class CaddyExportTests(unittest.TestCase):
         result = self.run_export()
         self.assertEqual(result["errors"], [])
         self.assertEqual(self.mapping(), {"9090": 4000, "11000": 4001, "4096": 4002})
-        text = (self.root / "caddyfile/Caddyfile").read_text()
+        text = (self.root / "CADDY/Caddyfile").read_text()
         self.assertNotIn("ts.net:4000", text)
         self.services([4096, 9090, 11000])
         self.run_export()
@@ -104,9 +104,32 @@ class CaddyExportTests(unittest.TestCase):
         self.assertEqual(self.run_export(steps="2")["errors"], [])
         self.assertEqual(self.mapping(), {"9090": 4000, "11000": 4002})
 
+    def test_own_frontends_are_not_exported_again(self):
+        for steps in ("", "1"):
+            with self.subTest(steps=steps):
+                self.services([9090, 11000])
+                self.run_export(steps=steps)
+                path = self.root / "CADDY/Caddyfile"
+                before = path.read_text()
+                self.services([4000, 4001, 9090, 11000])
+                result = self.run_export(steps=steps)
+                self.assertEqual(result["mappings_count"], 2)
+                self.assertEqual(path.read_text(), before)
+
+    def test_https_sni_can_differ_from_reachable_backend(self):
+        self.config.update(backend="host.containers.internal", tls_server_name="node.example.ts.net")
+        self.write_config()
+        (self.root / "services.json").write_text(json.dumps({"http_services": [
+            {"port": 2000, "scheme": "https"}, {"port": 5800, "scheme": "http"}]}))
+        self.assertEqual(self.run_export()["errors"], [])
+        text = (self.root / "CADDY/Caddyfile").read_text()
+        self.assertIn("reverse_proxy https://host.containers.internal:2000", text)
+        self.assertEqual(text.count("tls_server_name node.example.ts.net"), 1)
+        self.assertNotIn("insecure", text)
+
     def test_unchanged_file_not_rewritten_and_independent_of_transport(self):
         self.run_export()
-        path = self.root / "caddyfile/Caddyfile"
+        path = self.root / "CADDY/Caddyfile"
         before = (path.read_bytes(), path.stat().st_mtime_ns)
         with patch.dict(os.environ, {"CITADEL_WEBUI_TRANSPORT": "unix", "CITADEL_WEBUI_SOCKET": "/not/used.sock"}):
             result = self.run_export()
@@ -115,7 +138,7 @@ class CaddyExportTests(unittest.TestCase):
 
     def test_disabling_retains_existing_file_without_rewriting_or_deleting(self):
         self.run_export()
-        path = self.root / "caddyfile/Caddyfile"
+        path = self.root / "CADDY/Caddyfile"
         before = (path.read_bytes(), path.stat().st_mtime_ns)
         self.assertFalse(self.run_export(start="0")["considered"])
         self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
@@ -126,23 +149,23 @@ class CaddyExportTests(unittest.TestCase):
         result = self.run_export()
         self.assertTrue(result["available"])
         self.assertEqual(result["mappings_count"], 0)
-        self.assertNotIn("reverse_proxy", (self.root / "caddyfile/Caddyfile").read_text())
+        self.assertNotIn("reverse_proxy", (self.root / "CADDY/Caddyfile").read_text())
         self.assertEqual(len(self.mapping()), 2)
 
     def test_changed_settings_require_explicit_mapping_reset(self):
         self.run_export()
-        before = (self.root / "caddyfile/Caddyfile").read_bytes()
+        before = (self.root / "CADDY/Caddyfile").read_bytes()
         for start, steps in (("5000", "1"), ("4000", "2")):
             result = self.run_export(start, steps)
             self.assertFalse(result["available"])
             self.assertTrue(result["errors"])
-        self.assertEqual((self.root / "caddyfile/Caddyfile").read_bytes(), before)
+        self.assertEqual((self.root / "CADDY/Caddyfile").read_bytes(), before)
 
     def test_bad_values_do_not_generate_files(self):
         for start, steps in (("bad", "1"), ("-1", "1"), ("65536", "1"), ("4000", "0"), ("4000", "bad"), ("65535", "1")):
             result = self.run_export(start, steps)
             self.assertTrue(result["errors"], (start, steps))
-            self.assertFalse((self.root / "caddyfile").exists())
+            self.assertFalse((self.root / "CADDY").exists())
 
     def test_injection_in_config_is_rejected(self):
         for value in ("ucore\n}\n:80 {", "{$SECRET}", "https://ucore", "ucore:80", "ucore/path"):
@@ -151,28 +174,28 @@ class CaddyExportTests(unittest.TestCase):
                 self.config[key] = [value] if key == "hosts" else value
                 self.write_config()
                 self.assertTrue(self.run_export()["errors"], (key, value))
-                self.assertFalse((self.root / "caddyfile").exists())
+                self.assertFalse((self.root / "CADDY").exists())
 
     def test_ipv6_host_and_backend(self):
         self.config = {"backend": "::1", "hosts": ["[::1]"]}
         self.write_config()
         self.assertEqual(self.run_export()["errors"], [])
-        self.assertIn("reverse_proxy http://[::1]:9090", (self.root / "caddyfile/Caddyfile").read_text())
+        self.assertIn("reverse_proxy http://[::1]:9090", (self.root / "CADDY/Caddyfile").read_text())
 
     def test_https_upstream_is_not_downgraded_or_unverified(self):
         (self.root / "services.json").write_text(json.dumps({
             "https_only": True, "http_services": [{"port": 8443, "scheme": "https"}, {"port": 8080, "scheme": "http"}]}))
         self.assertEqual(self.run_export()["errors"], [])
-        text = (self.root / "caddyfile/Caddyfile").read_text()
+        text = (self.root / "CADDY/Caddyfile").read_text()
         self.assertIn("https://ucore:8443", text)
         self.assertIn("http://ucore:8080", text)
         self.assertNotIn("insecure", text)
 
     def test_corrupt_scan_or_allocation_preserves_last_file(self):
         self.run_export()
-        path = self.root / "caddyfile/Caddyfile"
+        path = self.root / "CADDY/Caddyfile"
         before = path.read_bytes()
-        for target in (self.root / "services.json", self.root / "caddyfile/ports.json"):
+        for target in (self.root / "services.json", self.root / "CADDY/ports.json"):
             original = target.read_text()
             target.write_text("broken")
             self.assertTrue(self.run_export()["errors"])

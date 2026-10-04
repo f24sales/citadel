@@ -112,8 +112,8 @@ The installer also attempts to enable user lingering when it is available.
 `CITADEL_WEBUI_TRANSPORT=tcp` is the default, including an unset or empty
 value. Explicitly select `unix` to serve the same WebUI over a Unix socket,
 on either the host or inside a container. `CITADEL_WEBUI_SOCKET` selects its
-absolute path; empty uses `$XDG_RUNTIME_DIR/citadel/citadel.sock`, or
-`/run/citadel/citadel.sock` without a runtime directory. The web server creates
+absolute path; empty uses the repository's `CADDY/citadel.sock` on the host
+and in the image. An explicit `%t/` path uses `XDG_RUNTIME_DIR`. The web server creates
 the socket; Podman can share its directory using a bind mount. A browser still
 needs a TCP/HTTP(S) proxy in front of a socket-only WebUI.
 
@@ -158,7 +158,8 @@ The Alpine Containerfile is maintained in
 version-tag pushes or the manual **Citadel Alpine image** workflow build, test
 TCP/Unix startup, and push `ghcr.io/safrano9999/citadel:YYYY.MM.N` plus `:latest`.
 The month has two digits; `N` increments within the month. Existing image
-versions cannot be overwritten. Only the safrano9999 repository publishes images.
+versions cannot be overwritten unless a manual run explicitly enables
+`replace_existing` for a requested version. Only the safrano9999 repository publishes images.
 
 GHCR initially creates packages as private. After the first push, set the
 `citadel` package's **Package settings → Change visibility → Public** once.
@@ -173,7 +174,10 @@ baked into the image. Named volumes can retain Tailscale state, logos and
 `/CITADEL` settings (`ports.filter.json` and Cloudflare managed-object metadata).
 A missing filter file is not required for WebUI startup; the scan creates an
 empty policy. The shared `CADDY` directory holds the generated Caddyfile,
-allocation ledger and optional `/CADDY/citadel.sock`. TCP is the default.
+allocation ledger and optional `citadel.sock`. Mount the host repository's
+`CADDY` directory at `/opt/safrano9999/CITADEL/CADDY` in the Citadel container,
+and at `/CADDY` in Caddy. Caddy's `unix//CADDY/citadel.sock` upstream stays
+the same when switching between host service and container. TCP is the default.
 Conditional mounts remain visible as commented `#Volume=...` lines when inactive.
 
 Use `./config.sh` to configure a container, or regenerate only Compose and
@@ -351,7 +355,7 @@ CADDYFILE_STEPS=1
 
 An unset, empty, or zero start disables generation; no output directory is
 created. Empty steps use 1. The extension reads the current service scan and
-writes `caddyfile/Caddyfile`, independently of the WebUI's `tcp`/`unix`
+writes `CADDY/Caddyfile`, independently of the WebUI's `tcp`/`unix`
 transport. It never starts/reloads Caddy, changes Quadlets, opens ports, calls
 Podman, or issues certificates. No running Caddy is required for generation.
 
@@ -381,7 +385,7 @@ or START=0 disables export without deleting existing artifacts.
 With empty/blank STEPS, every scan assigns currently discovered ports afresh in
 numeric order, incrementing by 1. The old allocation ledger is not read and is
 removed only after a new Caddyfile is successfully written.
-With explicit positive STEPS (including 1), `caddyfile/ports.json` remembers
+With explicit positive STEPS (including 1), `CADDY/ports.json` remembers
 the numeric mapping: newly
 discovered ports append, disappeared ports keep their slots, and titles,
 icons, and process identities are not used to recognize services. Preserve
@@ -396,15 +400,15 @@ Optionally bind-mount the **directory**, not the individual generated file,
 read-only into Caddy, e.g. in its Quadlet:
 
 ```ini
-Volume=/absolute/host/path/citadel/caddyfile:/etc/caddy/ucore:ro,z
+Volume=/absolute/host/path/citadel/CADDY:/CADDY:ro,z
 PublishPort=4000-4099:4000-4099
 ```
 
 For a containerized generator, bind the same host directory read-write to
-its `citadel/caddyfile` path. This also persists the mapping. The published
+its `/opt/safrano9999/CITADEL/CADDY` path. This also persists the mapping. The published
 range is an operator choice, not managed by Citadel; use nonoverlapping
 ranges for multiple exporters. Check Unix ownership and SELinux labels for
-the shared directory. Import `/etc/caddy/ucore/Caddyfile` in Caddy and validate
+the shared directory. Import `/CADDY/Caddyfile` in Caddy and validate
 then reload it after changes. An atomic replacement is visible through the
 directory mount. Disabling export stops writing; it does **not** delete an
 existing mounted file or remove Caddy routes. Remove the import separately
@@ -433,7 +437,7 @@ bind-mounted init directory, alongside these instance-specific inputs:
 - `service.conf`: a systemd drop-in with `After=fedora45-ai-init-hooks.service`
   in `[Unit]` and the absolute container-side `EnvironmentFile=.../instance.conf`
   in `[Service]`.
-- `caddyfile/`: persistent generated output, shared read-only with Caddy.
+- `CADDY/`: persistent generated output, shared read-only with Caddy.
 
 Install the ordering drop-in for both Citadel units **before boot**; the hook
 cannot reorder an already started WebUI. On recreation, provide that drop-in
@@ -658,7 +662,7 @@ parameter restricts the selection. The CLI requires an explicit selection.
 
 For file exporters, health verifies that generated artifacts exist under the
 Citadel directory and match the last successful export's SHA-256. The Caddy
-export also permits `caddyfile/` itself to link to a shared output directory;
+export also permits `CADDY/` itself to link to a shared output directory;
 the generated file must remain inside that directory. No dropdown
 URLs are required. This verifies the exported files, **not** whether an
 external Caddy has imported them, reloaded, or can reach its backends. The
