@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -35,7 +36,7 @@ class SetupContainerfileTests(unittest.TestCase):
             script.chmod(0o755)
         self.environment = {**{key: value for key, value in os.environ.items()
                                if not key.startswith(("CITADEL_", "CADDYFILE_"))},
-                            "PATH": f"{self.bin}:{os.defpath}",
+                            "PATH": f"{self.bin}:{Path(sys.executable).parent}:{os.defpath}",
                             "FORBIDDEN_LOG": str(self.root / "forbidden")}
 
     def execute(self, *arguments):
@@ -65,7 +66,7 @@ class SetupContainerfileTests(unittest.TestCase):
                     f"CITADEL_WEBUI_TRANSPORT={transport}\nCADDYFILE_START={port}\n")
                 result = self.execute()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual("Recommended bind mount" in result.stdout, enabled)
+                self.assertEqual("Recommended bind mount" in result.stdout, enabled, result.stderr)
                 if enabled:
                     self.assertIn(f"Volume={self.root}/CADDY:/CADDY:ro,z", result.stdout)
                     self.assertIn("unix//CADDY/citadel.sock", result.stdout)

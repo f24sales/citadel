@@ -26,11 +26,12 @@ printf '  mkdir -p %q && ln -s %q %q\n' \
 printf '\nAfter choosing one: systemctl --user daemon-reload\n'
 
 # Read settings through the application's shared loader and transport resolver.
-if PYTHONPATH="$SCRIPT_DIR:$SCRIPT_DIR/functions" python3 -s -c '
+caddy_selected="$(PYTHONPATH="$SCRIPT_DIR:$SCRIPT_DIR/functions" python3 -s -c '
 from python_header import get_int
 from webui_transport import unix_socket_path
-raise SystemExit(not (get_int("CADDYFILE_START") > 0 or unix_socket_path() is not None))
-'; then
+print(int(get_int("CADDYFILE_START") > 0 or unix_socket_path() is not None))
+')"
+if [[ "$caddy_selected" == 1 ]]; then
     printf '\nRecommended bind mount in your Caddy Quadlet:\n'
     printf '  Volume=%s/CADDY:/CADDY:ro,z\n' "$SCRIPT_DIR"
     printf '  Unix WebUI, if selected: reverse_proxy unix//CADDY/citadel.sock\n'
