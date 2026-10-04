@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -59,7 +60,7 @@ def configure_optional_clients(root):
         if not any(os.environ.get(key, "").strip() for key in keys):
             source = root / "extensions/enabled" / provider
             if source.exists():
-                source.rename(root / "extensions/disabled" / provider)
+                shutil.move(source, root / "extensions/disabled" / provider)
 
 
 def tailscale_state():
