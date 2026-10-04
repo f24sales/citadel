@@ -22,13 +22,13 @@ TAILSCALE_VOLUMES=${CONTAINER_NAME}-tailscale:/var/lib/tailscale:Z
 
 # Separate from CITADEL_LOGO_PERSISTENT's download behavior.
 #volume-if: CITADEL_LOGOS_VOLUMES CITADEL_LOGOS_VOLUMES
-#default-preset: ${CONTAINER_NAME}-logos:/opt/safrano9999/CITADEL/icons:Z
-CITADEL_LOGOS_VOLUMES=${CONTAINER_NAME}-logos:/opt/safrano9999/CITADEL/icons:Z
+#default-preset: ./icons:/opt/safrano9999/CITADEL/icons:z
+CITADEL_LOGOS_VOLUMES=./icons:/opt/safrano9999/CITADEL/icons:z
 
-# Port filter/Cloudflare policy and managed-object IDs, not application code.
+# Shared policy, provider state and scan results; not application code.
 #volume-if: CITADEL_VOLUMES CITADEL_VOLUMES
-#default-preset: ${CONTAINER_NAME}-citadel:/CITADEL:Z
-CITADEL_VOLUMES=${CONTAINER_NAME}-citadel:/CITADEL:Z
+#default-preset: ./CITADEL:/CITADEL:z
+CITADEL_VOLUMES=./CITADEL:/CITADEL:z
 
 # Share with Caddy read-only (:ro,z there): Caddyfile, ports.json and optional
 # citadel.sock. Both runtimes use their own repository's CADDY directory.

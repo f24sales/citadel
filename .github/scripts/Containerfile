@@ -40,8 +40,8 @@ COPY container/entrypoint.py /usr/local/bin/citadel-container
 
 # Mutable settings only; atomic_write_json follows these links when updating.
 RUN mkdir -p icons cache CADDY /CITADEL extensions/disabled /var/lib/tailscale /run/citadel \
- && ln -s /CITADEL/ports.filter.json ports.filter.json \
- && ln -s /CITADEL/cloudflare-routes.json extensions/enabled/cloudflare/routes.json \
+ && ln -s /CITADEL CITADEL \
+ && python3 -s functions/runtime_state.py \
  && chmod 0755 scan.sh unroute.sh /usr/local/bin/citadel-container /usr/local/bin/tailscale-serve-reset.sh
 
 EXPOSE 11000

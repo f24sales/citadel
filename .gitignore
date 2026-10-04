@@ -16,6 +16,7 @@ config.conf
 /container.conf
 /docker-compose.yml
 /CADDY/
+/CITADEL/
 
 # Extensions runtime
 extensions/providers_state.json

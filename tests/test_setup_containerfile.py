@@ -19,6 +19,8 @@ class SetupContainerfileTests(unittest.TestCase):
         self.root = Path(temporary.name) / "CITADEL"
         self.root.mkdir()
         shutil.copy2(ROOT / "setup.sh", self.root / "setup.sh")
+        (self.root / "functions").mkdir()
+        shutil.copy2(ROOT / "functions/runtime_state.py", self.root / "functions/runtime_state.py")
         for name in ("config.sh", "set_daemon.sh"):
             script = self.root / name
             script.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$0.called"\n')
@@ -48,6 +50,20 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertIn(str(self.root / "citadel.container"), result.stdout)
         self.assertEqual(result.stdout.count("ln -s"), 2)
         self.assertTrue((self.root / "CADDY").is_dir())
+        self.assertNotIn("Recommended bind mount", result.stdout)
+
+    def test_caddy_hint_uses_the_active_rendered_mount(self):
+        for prefix in ("", "#"):
+            with self.subTest(prefix=prefix):
+                (self.root / "citadel.container").write_text(
+                    f"{prefix}Volume={self.root}/CADDY:/opt/safrano9999/CITADEL/CADDY:z\n")
+                result = self.execute()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("Recommended bind mount" in result.stdout, prefix == "")
+                if not prefix:
+                    self.assertIn(f"Volume={self.root}/CADDY:/CADDY:ro,z", result.stdout)
+                    self.assertIn("unix//CADDY/citadel.sock", result.stdout)
+                    self.assertIn("import /CADDY/Caddyfile", result.stdout)
 
     def test_every_argument_is_rejected_before_configuration(self):
         for argument in ("--help", "--show", "--render-containerfile", "--render-container", "host"):
@@ -85,13 +101,13 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertEqual(json.loads(command)[-1], "/usr/local/bin/citadel-container")
         self.assertIn("alpine:", recipe)
         self.assertIn("@sha256:", recipe)
-        self.assertIn("ln -s /CITADEL/ports.filter.json", recipe)
+        self.assertIn("python3 -s functions/runtime_state.py", recipe)
         self.assertNotIn("pip install", recipe)
 
     def test_real_renderer_keeps_bootstrap_and_conditional_mounts(self):
         for name in ("config.sh", "config.conf_example", "container.example"):
             shutil.copy2(ROOT / name, self.root / name)
-        (self.root / "config.conf").write_text("CITADEL_WEBUI_PORT=11000\nCITADEL_WEBUI_TRANSPORT=unix\n")
+        (self.root / "config.conf").write_text("CITADEL_WEBUI_PORT=11000\nCITADEL_WEBUI_TRANSPORT=unix\nCADDYFILE_START=7000\n")
         (self.root / "container.conf").write_text("CITADEL_WEBUI_PUBLISH_PORT=\nADDITIONAL_LINE=Pull=never\n")
         (self.root / ".env").write_text("TS_AUTHKEY=\n")
         result = subprocess.run(["bash", str(self.root / "config.sh"), "--render-container"],
@@ -105,6 +121,10 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertNotIn("AutoUpdate=", quadlet)
         self.assertIn("pull_policy: never", (self.root / "docker-compose.yml").read_text())
         self.assertIn(f"Volume={self.root}/CADDY:/opt/safrano9999/CITADEL/CADDY:z", quadlet)
+        self.assertIn(f"Volume={self.root}/extensions/enabled/caddy/config.json:/opt/safrano9999/CITADEL/extensions/enabled/caddy/config.json:ro,z", quadlet)
+        self.assertNotIn("Volume=z", quadlet)
+        self.assertIn(f"Volume={self.root}/icons:/opt/safrano9999/CITADEL/icons:z", quadlet)
+        self.assertIn(f"Volume={self.root}/CITADEL:/CITADEL:z", quadlet)
         self.assertIn("#Volume=citadel-tailscale:/var/lib/tailscale:Z", quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / "config.conf"), quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / ".env"), quadlet)

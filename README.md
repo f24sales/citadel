@@ -144,6 +144,9 @@ Configure and render the host unit, Quadlet and runtime files without starting a
 
 `setup.sh` takes no arguments and always renders both service variants, then
 prints their `ln -s` commands. Run only one variant per instance.
+When the renderer activates the shared `CADDY` mount (Unix WebUI or Caddyfile
+generation), setup also prints the corresponding read-only Caddy bind mount.
+It recommends that integration; it does not modify or restart Caddy.
 
 Both definitions stay in the same project directory as `config.conf`, `.env`
 and `container.conf`. The host service reads these application settings there;
@@ -170,8 +173,12 @@ is enabled; the successfully pushed image remains available. See
 The image includes the scanner, WebUI, Tailscale and cloudflared. It uses a
 small supervised bootstrap, not systemd internally. Missing credentials disable
 the corresponding clients and providers. Runtime secrets are injected, never
-baked into the image. Named volumes can retain Tailscale state, logos and
-`/CITADEL` settings (`ports.filter.json` and Cloudflare managed-object metadata).
+baked into the image. A named volume can retain Tailscale state. By default,
+logos and `CITADEL/` state are bind-mounted from the same repository used by
+the host service. Setup moves existing policy, provider state and scan results
+into `CITADEL/` and links the application paths there, without overwriting any
+conflicting data. The image uses the same layout helper. Named volumes remain
+possible by changing `container.conf`, but are then separate from host state.
 A missing filter file is not required for WebUI startup; the scan creates an
 empty policy. The shared `CADDY` directory holds the generated Caddyfile,
 allocation ledger and optional `citadel.sock`. Mount the host repository's

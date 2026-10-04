@@ -2516,6 +2516,11 @@ volume_rule_matches() {
     return 1
 }
 
+# Commas inside mount options (ro,z) are not separators between volumes.
+split_volume_items() {
+    mapfile -t items < <(printf '%s\n' "$1" | sed -E 's/,([^,:]+:)/\n\1/g')
+}
+
 generate_container_files() {
     local source_file host image compose_file quadlet_file line stripped entry key value
     local prefix internal_key internal_port publish_port publish_host map enabled_key enabled_value
@@ -2681,7 +2686,7 @@ generate_container_files() {
             if [[ "$key" == *_VOLUMES ]]; then
                 [[ -z "${volume_rules[$key]+x}" ]] || continue
                 value="$(expand_volume_value "$key" "$value")" || return 1
-                IFS=',' read -ra items <<< "$value"
+                split_volume_items "$value"
                 for item in "${items[@]}"; do
                     item="$(trim "$item")"
                     source="${item%%:*}"
@@ -2714,7 +2719,7 @@ generate_container_files() {
             return 1 ;;
         esac
         value="$(expand_volume_value "$key" "$value")" || return 1
-        IFS=',' read -ra items <<< "$value"
+        split_volume_items "$value"
         for item in "${items[@]}"; do
             item="$(trim "$item")"
             [ -n "$item" ] || continue
