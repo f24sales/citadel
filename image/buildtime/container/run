@@ -2,6 +2,8 @@
 """Exclude unavailable bare-metal installer helpers from the runtime plugin."""
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 root = Path(os.environ["FEDORA_BUILDTIME_REPOSITORY_DIR"])
 for name in ("install.py", "provider_example"):
@@ -9,3 +11,6 @@ for name in ("install.py", "provider_example"):
     if (helper.is_symlink() and helper.readlink() == Path("../SCRIPTS") / name
             and not helper.exists()):
         helper.unlink()
+
+# Fedora/uCore uses the same data layout as the standalone Alpine image.
+subprocess.run([sys.executable, "-s", str(root / "functions/runtime_state.py"), "--image"], check=True)

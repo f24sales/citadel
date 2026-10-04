@@ -30,7 +30,7 @@ COPY functions/exporters/*.py ./functions/exporters/
 COPY assets/ ./assets/
 COPY templates/ ./templates/
 COPY extensions/ui.json ./extensions/
-COPY extensions/enabled/caddy/extension.json extensions/enabled/caddy/config.json ./extensions/enabled/caddy/
+COPY extensions/enabled/caddy/extension.json extensions/enabled/caddy/config.json.example ./extensions/enabled/caddy/
 COPY extensions/enabled/cloudflare/extension.json extensions/enabled/cloudflare/config.json ./extensions/enabled/cloudflare/
 COPY extensions/enabled/localhost/extension.json extensions/enabled/localhost/config.json ./extensions/enabled/localhost/
 COPY extensions/enabled/subnet/extension.json extensions/enabled/subnet/config.json ./extensions/enabled/subnet/
@@ -39,9 +39,8 @@ COPY image/runtime/usr/local/bin/tailscale-serve-reset.sh /usr/local/bin/
 COPY container/entrypoint.py /usr/local/bin/citadel-container
 
 # Mutable settings only; atomic_write_json follows these links when updating.
-RUN mkdir -p icons cache CADDY /CITADEL extensions/disabled /var/lib/tailscale /run/citadel \
- && ln -s /CITADEL CITADEL \
- && python3 -s functions/runtime_state.py \
+RUN mkdir -p icons cache CADDY extensions/disabled /run/citadel \
+ && python3 -s functions/runtime_state.py --image \
  && chmod 0755 scan.sh unroute.sh /usr/local/bin/citadel-container /usr/local/bin/tailscale-serve-reset.sh
 
 EXPOSE 11000

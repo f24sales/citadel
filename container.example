@@ -17,28 +17,14 @@ CITADEL_WEBUI_PUBLISH_PORT=11000
 
 # Node identity, keys and Tailscale state; not an ephemeral node login.
 #volume-if: TAILSCALE_VOLUMES TS_AUTHKEY
-#default-preset: ${CONTAINER_NAME}-tailscale:/var/lib/tailscale:Z
-TAILSCALE_VOLUMES=${CONTAINER_NAME}-tailscale:/var/lib/tailscale:Z
+#default-preset: ${CONTAINER_NAME}-tailscale:/opt/safrano9999/CITADEL/CITADEL_TAILSCALE:Z
+TAILSCALE_VOLUMES=${CONTAINER_NAME}-tailscale:/opt/safrano9999/CITADEL/CITADEL_TAILSCALE:Z
 
-# Separate from CITADEL_LOGO_PERSISTENT's download behavior.
-#volume-if: CITADEL_LOGOS_VOLUMES CITADEL_LOGOS_VOLUMES
-#default-preset: ./icons:/opt/safrano9999/CITADEL/icons:z
-CITADEL_LOGOS_VOLUMES=./icons:/opt/safrano9999/CITADEL/icons:z
-
-# Shared policy, provider state and scan results; not application code.
+# One shared bind: policy, scan/provider state, logos, Caddy config/output/socket.
+# Application code stays in the image. Tailscale state remains separate.
 #volume-if: CITADEL_VOLUMES CITADEL_VOLUMES
-#default-preset: ./CITADEL:/CITADEL:z
-CITADEL_VOLUMES=./CITADEL:/CITADEL:z
-
-# Share with Caddy read-only (:ro,z there): Caddyfile, ports.json and optional
-# citadel.sock. Both runtimes use their own repository's CADDY directory.
-#volume-if: CADDY_VOLUMES CADDYFILE_START>0 CITADEL_WEBUI_TRANSPORT=unix
-#default-preset: ./CADDY:/opt/safrano9999/CITADEL/CADDY:z
-CADDY_VOLUMES=./CADDY:/opt/safrano9999/CITADEL/CADDY:z
-
-# Use the same exporter settings as the host service, never a second copy.
-#volume-if: CADDY_CONFIG_VOLUMES CADDYFILE_START>0
-CADDY_CONFIG_VOLUMES=./extensions/enabled/caddy/config.json:/opt/safrano9999/CITADEL/extensions/enabled/caddy/config.json:ro,z
+#default-preset: ./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z
+CITADEL_VOLUMES=./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z
 
 # May be blank for a mounted host Tailscale socket or TS_USERSPACE=1.
 CITADEL_CAPABILITIES=NET_ADMIN,NET_RAW

@@ -1,6 +1,6 @@
 # Runtime data
 cache/
-icons/
+icons
 services.json
 ss.json
 tailscale.json
@@ -15,15 +15,17 @@ config.conf
 /citadel.container
 /container.conf
 /docker-compose.yml
-/CADDY/
+/CADDY
 /CITADEL/
+/CITADEL_DATA/
+/CITADEL_TAILSCALE/
 
 # Extensions runtime
 extensions/providers_state.json
+extensions/enabled/caddy/config.json
 extensions/enabled/*/routes.json
 extensions/enabled/*/status.json
 extensions/disabled/*/status.json
-/CADDY/
 extensions/enabled/*/config.ini
 extensions/disabled/*/config.ini
 

@@ -134,7 +134,8 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
         steps_text = steps_raw.strip()
         remember = steps_text.lower() not in ("", "blank")
         steps = port_number(steps_text if remember else "1", "CADDYFILE_STEPS")
-        config = read_object(provider_dir / "config.json")
+        config_path = provider_dir / "config.json"
+        config = read_object(config_path if config_path.exists() else provider_dir / "config.json.example")
         backend = host_name(config.get("backend", "127.0.0.1"))
         tls_server_name = host_name(config["tls_server_name"]) if config.get("tls_server_name") else ""
         raw_hosts = config.get("hosts", ["localhost"])

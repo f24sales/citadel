@@ -38,6 +38,12 @@ class CaddyExportTests(unittest.TestCase):
     def mapping(self):
         return json.loads((self.root / "CADDY/ports.json").read_text())["ports"]
 
+    def test_missing_runtime_config_uses_shipped_example(self):
+        (self.provider / "config.json").rename(self.provider / "config.json.example")
+        result = self.run_export()
+        self.assertTrue(result["available"], result["errors"])
+        self.assertIn("http://ucore:11000", (self.root / "CADDY/Caddyfile").read_text())
+
     def test_disabled_does_not_create_directory_or_require_valid_settings(self):
         (self.provider / "config.json").unlink()
         (self.root / "services.json").unlink()

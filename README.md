@@ -144,8 +144,8 @@ Configure and render the host unit, Quadlet and runtime files without starting a
 
 `setup.sh` takes no arguments and always renders both service variants, then
 prints their `ln -s` commands. Run only one variant per instance.
-When the renderer activates the shared `CADDY` mount (Unix WebUI or Caddyfile
-generation), setup also prints the corresponding read-only Caddy bind mount.
+When Unix WebUI or Caddyfile generation is selected, setup also prints the
+corresponding read-only Caddy bind mount, using the shared configuration loader.
 It recommends that integration; it does not modify or restart Caddy.
 
 Both definitions stay in the same project directory as `config.conf`, `.env`
@@ -173,17 +173,24 @@ is enabled; the successfully pushed image remains available. See
 The image includes the scanner, WebUI, Tailscale and cloudflared. It uses a
 small supervised bootstrap, not systemd internally. Missing credentials disable
 the corresponding clients and providers. Runtime secrets are injected, never
-baked into the image. A named volume can retain Tailscale state. By default,
-logos and `CITADEL/` state are bind-mounted from the same repository used by
-the host service. Setup moves existing policy, provider state and scan results
-into `CITADEL/` and links the application paths there, without overwriting any
-conflicting data. The image uses the same layout helper. Named volumes remain
+baked into the image. A separate named volume retains Tailscale state at
+`/opt/safrano9999/CITADEL/CITADEL_TAILSCALE` in Alpine and Fedora/uCore from
+the Citadel/base layer onward. By default,
+one bind mount, `./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z`, shares all Citadel data with the host
+service: policy, scan/provider state, logos, Caddy configuration and its
+generated files/socket. Setup moves these into `CITADEL/` and links the
+application paths there, without overwriting any
+conflicting data. Both Alpine and Fedora/uCore use `CITADEL_DATA/` inside the
+Citadel repository, with the same layout helper; application code is never
+covered by the mount. Named volumes remain
 possible by changing `container.conf`, but are then separate from host state.
+Cloudflare has no volume and no persistent ID ledger. Its `routes.json` is
+disposable dashboard output and is excluded from the shared state mount.
 A missing filter file is not required for WebUI startup; the scan creates an
 empty policy. The shared `CADDY` directory holds the generated Caddyfile,
-allocation ledger and optional `citadel.sock`. Mount the host repository's
-`CADDY` directory at `/opt/safrano9999/CITADEL/CADDY` in the Citadel container,
-and at `/CADDY` in Caddy. Caddy's `unix//CADDY/citadel.sock` upstream stays
+allocation ledger and optional `citadel.sock`. The repository's `CADDY` path
+links into this shared state; mount only that subdirectory at `/CADDY` in
+Caddy, not the private Citadel state. Caddy's `unix//CADDY/citadel.sock` upstream stays
 the same when switching between host service and container. TCP is the default.
 Conditional mounts remain visible as commented `#Volume=...` lines when inactive.
 
@@ -411,8 +418,8 @@ Volume=/absolute/host/path/citadel/CADDY:/CADDY:ro,z
 PublishPort=4000-4099:4000-4099
 ```
 
-For a containerized generator, bind the same host directory read-write to
-its `/opt/safrano9999/CITADEL/CADDY` path. This also persists the mapping. The published
+The Citadel container already receives this directory through its single
+`./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z` bind mount. This also persists the mapping. The published
 range is an operator choice, not managed by Citadel; use nonoverlapping
 ranges for multiple exporters. Check Unix ownership and SELinux labels for
 the shared directory. Import `/CADDY/Caddyfile` in Caddy and validate
@@ -574,13 +581,20 @@ invalid tokens or incomplete required configuration are reported. It manages:
 - ingress entries on an existing named Tunnel;
 - optional Cloudflare Access email policies.
 
-Every scan builds the managed ingress afresh from current discovery, targeting
-`127.0.0.1:<original-port>` with the discovered HTTP/HTTPS scheme. Disappeared
-managed routes are removed. There is no persistence or port-range switch;
-saved resource IDs are used only to update and clean up owned DNS/Access objects.
+Every successful scan first queries Cloudflare, clears **all ingress on the
+configured Tunnel** to a 404 fallback, and deletes its DNS bindings and Citadel
+Access applications/policies. It then creates fresh bindings and enables only
+the newly discovered routes, targeting `127.0.0.1:<original-port>` with the
+discovered HTTP/HTTPS scheme. Unchanged services are recreated too; an empty
+scan leaves the Tunnel empty. Use a dedicated Tunnel for this instance.
 
-It preserves unrelated DNS records, Access resources, and Tunnel ingress
-rules. See [CITADEL_CLOUDFLARE.md](CITADEL_CLOUDFLARE.md) for the required API
+No old local route file or resource IDs are read. All relevant inventory pages
+are fetched before reset. Invalid scans, inventory failures and foreign-object
+conflicts abort before clearing; failed deletion/recreation never enables the
+new routes. There is an intentional interruption during each rebuild.
+Other Tunnels and unrelated DNS/Access objects are not reset. No Cloudflare
+volume or persistence option is offered; local route output is disposable.
+See [CITADEL_CLOUDFLARE.md](CITADEL_CLOUDFLARE.md) for the required API
 permissions and provider-specific setup.
 
 For port 443, the local Caddy site block must include both `<domain>:443` and
@@ -633,8 +647,8 @@ journalctl --user -u citadel.service
   replaced so readers never observe a partial update.
 - Runtime state, caches, generated routes, local configuration, and release
   archives are excluded by `.gitignore`.
-- Without Fedora container persistence, back up `ports.filter.json` and
-  provider state when custom routes must survive a fresh checkout.
+- Back up `ports.filter.json` for custom exclusions/access rules and `CADDY/`
+  for explicit persistent port assignments. Cloudflare needs no saved IDs.
 
 ## Development and checks
 

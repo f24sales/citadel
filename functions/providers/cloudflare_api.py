@@ -65,6 +65,27 @@ class CloudflareAPI:
     def verify_token(self) -> None:
         self.request("GET", "/user/tokens/verify")
 
+    def list_all(self, path: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        page = 1
+        while True:
+            batch = self.request("GET", path, query={"page": page, "per_page": 100})
+            if not isinstance(batch, list):
+                raise CloudflareAPIError("Cloudflare returned an invalid resource list")
+            for item in batch:
+                identity = item.get("id") if isinstance(item, dict) else None
+                if not isinstance(identity, str) or not identity or identity in seen:
+                    raise CloudflareAPIError("Cloudflare returned missing/duplicate resource IDs")
+                seen.add(identity)
+            records.extend(batch)
+            if len(batch) < 100:
+                return records
+            page += 1
+
+    def dns_records(self, zone_id: str) -> list[dict[str, Any]]:
+        return self.list_all(f"/zones/{zone_id}/dns_records")
+
     def zone(self, zone_id: str) -> dict[str, Any]:
         result = self.request("GET", f"/zones/{zone_id}")
         if not isinstance(result, dict):
@@ -148,9 +169,11 @@ class CloudflareAPI:
             f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
         )
         if not isinstance(result, dict):
-            return {}
+            raise CloudflareAPIError("Cloudflare returned an invalid tunnel configuration")
         config = result.get("config")
-        return config if isinstance(config, dict) else {}
+        if config is not None and not isinstance(config, dict):
+            raise CloudflareAPIError("Cloudflare returned an invalid tunnel configuration")
+        return config or {}
 
     def update_tunnel_configuration(
         self,
@@ -164,42 +187,14 @@ class CloudflareAPI:
             payload={"config": config},
         )
 
-    def ensure_tunnel_dns(
+    def create_tunnel_dns(
         self,
         zone_id: str,
         hostname: str,
         tunnel_id: str,
-        managed_record_id: str = "",
     ) -> str:
         name = hostname.rstrip(".").lower()
         content = f"{tunnel_id}.cfargotunnel.com"
-        records = self.request(
-            "GET",
-            f"/zones/{zone_id}/dns_records",
-            query={"name": name, "per_page": 100},
-        )
-        records = records if isinstance(records, list) else []
-        matching = next(
-            (
-                item
-                for item in records
-                if isinstance(item, dict) and str(item.get("type") or "").upper() == "CNAME"
-            ),
-            None,
-        )
-        conflicting = next(
-            (
-                item
-                for item in records
-                if isinstance(item, dict)
-                and str(item.get("type") or "").upper() not in {"CNAME", "MX", "TXT"}
-            ),
-            None,
-        )
-        if conflicting:
-            raise CloudflareAPIError(
-                f"DNS record {name} exists and is not a CNAME"
-            )
         payload = {
             "type": "CNAME",
             "name": name,
@@ -207,23 +202,6 @@ class CloudflareAPI:
             "proxied": True,
             "ttl": 1,
         }
-        if matching:
-            record_id = str(matching.get("id") or "")
-            if matching.get("type") != "CNAME":
-                raise CloudflareAPIError(f"DNS record {name} exists and is not a CNAME")
-            if not record_id:
-                raise CloudflareAPIError(f"DNS record {name} has no id")
-            same_tunnel = (
-                str(matching.get("content") or "").rstrip(".").lower()
-                == content.lower()
-                and matching.get("proxied") is True
-            )
-            if record_id != managed_record_id and not (not managed_record_id and same_tunnel):
-                raise CloudflareAPIError(
-                    f"DNS record {name} already exists and is not managed by CITADEL"
-                )
-            self.request("PUT", f"/zones/{zone_id}/dns_records/{record_id}", payload=payload)
-            return record_id
         result = self.request("POST", f"/zones/{zone_id}/dns_records", payload=payload)
         if not isinstance(result, dict) or not result.get("id"):
             raise CloudflareAPIError(f"Cloudflare did not return a DNS record id for {name}")
@@ -237,21 +215,13 @@ class CloudflareAPI:
                 raise
 
     def access_apps(self, account_id: str) -> list[dict[str, Any]]:
-        result = self.request(
-            "GET",
-            f"/accounts/{account_id}/access/apps",
-            query={"per_page": 100},
-        )
-        return result if isinstance(result, list) else []
+        return self.list_all(f"/accounts/{account_id}/access/apps")
 
     def create_access_app(self, account_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = self.request("POST", f"/accounts/{account_id}/access/apps", payload=payload)
         if not isinstance(result, dict):
             raise CloudflareAPIError("Cloudflare did not return the created Access application")
         return result
-
-    def update_access_app(self, account_id: str, app_id: str, payload: dict[str, Any]) -> None:
-        self.request("PUT", f"/accounts/{account_id}/access/apps/{app_id}", payload=payload)
 
     def delete_access_app(self, account_id: str, app_id: str) -> None:
         try:
@@ -261,12 +231,7 @@ class CloudflareAPI:
                 raise
 
     def access_policies(self, account_id: str) -> list[dict[str, Any]]:
-        result = self.request(
-            "GET",
-            f"/accounts/{account_id}/access/policies",
-            query={"per_page": 100},
-        )
-        return result if isinstance(result, list) else []
+        return self.list_all(f"/accounts/{account_id}/access/policies")
 
     def create_access_policy(
         self,
@@ -281,18 +246,6 @@ class CloudflareAPI:
         if not isinstance(result, dict):
             raise CloudflareAPIError("Cloudflare did not return the created Access policy")
         return result
-
-    def update_access_policy(
-        self,
-        account_id: str,
-        policy_id: str,
-        payload: dict[str, Any],
-    ) -> None:
-        self.request(
-            "PUT",
-            f"/accounts/{account_id}/access/policies/{policy_id}",
-            payload=payload,
-        )
 
     def delete_access_policy(self, account_id: str, policy_id: str) -> None:
         try:

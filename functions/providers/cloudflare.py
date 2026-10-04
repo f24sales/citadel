@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -89,192 +88,92 @@ def ensure_one_time_pin(
     return [*providers, provider]
 
 
-def remove_managed_ingress(
-    config: dict[str, Any],
-    managed_hostnames: set[str],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    ingress = config.get("ingress")
-    ingress = ingress if isinstance(ingress, list) else []
-    preserved: list[dict[str, Any]] = []
-    fallback: dict[str, Any] = {"service": "http_status:404"}
-    for entry in ingress:
-        if not isinstance(entry, dict):
-            continue
-        hostname = str(entry.get("hostname") or "").lower()
-        if hostname and hostname in managed_hostnames:
-            continue
-        if not hostname and str(entry.get("service") or "").startswith("http_status:"):
-            fallback = entry
-            continue
-        preserved.append(entry)
-    return preserved, fallback
-
-
-def adopt_matching_ingress(
-    config: dict[str, Any],
+def reset_tunnel(
+    api: CloudflareAPI, account_id: str, zone_id: str, tunnel_id: str,
     desired: dict[str, dict[str, Any]],
-    managed_hostnames: set[str],
-    origin_host: str = "",
-) -> set[str]:
-    adopted = set(managed_hostnames)
-    ingress = config.get("ingress")
-    ingress = ingress if isinstance(ingress, list) else []
-    for entry in ingress:
-        if not isinstance(entry, dict):
-            continue
-        hostname = str(entry.get("hostname") or "").lower()
-        route = desired.get(hostname)
-        if not route or hostname in adopted:
-            continue
-        route_origin_host = str(route.get("origin_host") or origin_host)
-        route_origin_port = int(route.get("origin_port") or route["port"])
-        expected_service = f"{route['scheme']}://{route_origin_host}:{route_origin_port}"
-        if str(entry.get("service") or "") == expected_service:
-            adopted.add(hostname)
-    return adopted
+) -> dict[str, Any]:
+    """Discover remotely, clear the configured tunnel, then delete its bindings.
 
-
-def reconcile_access(
-    api: CloudflareAPI,
-    account_id: str,
-    desired: dict[str, dict[str, Any]],
-    previous_apps: dict[str, str],
-    previous_policies: dict[str, str],
-    managed_apps: dict[str, str],
-    managed_policies: dict[str, str],
-) -> tuple[dict[str, str], dict[str, str]]:
-    existing_apps = api.access_apps(account_id)
-    apps_by_domain = {
-        str(app.get("domain") or "").lower(): app
-        for app in existing_apps
-        if isinstance(app, dict) and app.get("domain")
+    DNS is removed last and recreated first, so even an interrupted run can
+    discover the remaining Access objects next time without a local ID ledger.
+    """
+    config = api.tunnel_configuration(account_id, tunnel_id)
+    ingress = config.get("ingress", [])
+    if not isinstance(ingress, list) or any(not isinstance(entry, dict) for entry in ingress):
+        raise CloudflareAPIError("Invalid remote tunnel configuration; reset aborted")
+    records = api.dns_records(zone_id)
+    apps = api.access_apps(account_id)
+    policies = api.access_policies(account_id)
+    tunnel_target = f"{tunnel_id}.cfargotunnel.com".lower()
+    owned_records = [
+        record for record in records
+        if record.get("type") == "CNAME"
+        and str(record.get("content", "")).rstrip(".").lower() == tunnel_target
+    ]
+    hostnames = set(desired) | {
+        str(record.get("name", "")).rstrip(".").lower() for record in owned_records
+    } | {
+        str(entry.get("hostname", "")).rstrip(".").lower()
+        for entry in ingress
     }
-    apps_by_id = {
-        str(app.get("id") or ""): app
-        for app in existing_apps
-        if isinstance(app, dict) and app.get("id")
-    }
-    existing_policies = api.access_policies(account_id)
-    policies_by_name = {
-        str(policy.get("name") or ""): policy
-        for policy in existing_policies
-        if isinstance(policy, dict) and policy.get("name")
-    }
-    policies_by_id = {
-        str(policy.get("id") or ""): policy
-        for policy in existing_policies
-        if isinstance(policy, dict) and policy.get("id")
-    }
-    selected_apps: dict[str, dict[str, Any] | None] = {}
-    selected_policies: dict[str, dict[str, Any] | None] = {}
-
-    for hostname, route in desired.items():
-        if not route["whitelist"]:
-            continue
-        previous_policy_id = previous_policies.get(hostname, "")
-        named_policy = policies_by_name.get(f"{ACCESS_POLICY_PREFIX}{hostname}")
-        if (
-            named_policy
-            and previous_policy_id
-            and str(named_policy.get("id") or "") != previous_policy_id
+    hostnames.discard("")
+    owned_apps = [
+        app for app in apps
+        if app.get("domain") in hostnames
+        and app.get("name") == f"{ACCESS_APP_PREFIX}{app['domain']}"
+    ]
+    owned_policies = [
+        policy for policy in policies
+        if str(policy.get("name", "")).removeprefix(ACCESS_POLICY_PREFIX) in hostnames
+        and str(policy.get("name", "")).startswith(ACCESS_POLICY_PREFIX)
+    ]
+    # Resolve every conflict before touching existing routes or access controls.
+    for record in records:
+        if (record.get("name") in desired and record not in owned_records
+                and record.get("type") not in {"MX", "TXT"}):
+            raise CloudflareAPIError(f"Foreign DNS record conflicts with {record.get('name')}")
+    for app in apps:
+        if app.get("domain") in desired and app not in owned_apps:
+            raise CloudflareAPIError(f"Foreign Access application conflicts with {app.get('domain')}")
+    policy_ids = {policy.get("id") for policy in owned_policies}
+    for app in apps:
+        if app not in owned_apps and any(
+            policy.get("id") in policy_ids
+            for policy in (app.get("policies") or []) if isinstance(policy, dict)
         ):
-            raise CloudflareAPIError(
-                f"Access policy for {hostname} exists and is not managed by CITADEL"
-            )
-        policy = policies_by_id.get(previous_policy_id) if previous_policy_id else named_policy
-        previous_app_id = previous_apps.get(hostname, "")
-        domain_app = apps_by_domain.get(hostname)
-        if domain_app:
-            domain_app_id = str(domain_app.get("id") or "")
-            if previous_app_id and domain_app_id != previous_app_id:
-                raise CloudflareAPIError(
-                    f"Access application for {hostname} exists and is not managed by CITADEL"
-                )
-            if not previous_app_id and str(domain_app.get("name") or "") != f"{ACCESS_APP_PREFIX}{hostname}":
-                raise CloudflareAPIError(
-                    f"Access application for {hostname} exists and is not managed by CITADEL"
-                )
-        app = apps_by_id.get(previous_app_id) if previous_app_id else domain_app
-        selected_policies[hostname] = policy
-        selected_apps[hostname] = app
+            raise CloudflareAPIError("Citadel policy is also used by a foreign Access application")
+    for resource in [*owned_records, *owned_apps, *owned_policies]:
+        if not resource.get("id"):
+            raise CloudflareAPIError("Cloudflare resource is missing an ID; reset aborted")
 
+    config = {**config, "ingress": [{"service": "http_status:404"}]}
+    api.update_tunnel_configuration(account_id, tunnel_id, config)
+    for app in owned_apps:
+        api.delete_access_app(account_id, app["id"])
+    for policy in owned_policies:
+        api.delete_access_policy(account_id, policy["id"])
+    for record in owned_records:
+        api.delete_dns_record(zone_id, record["id"])
+    return config
+
+
+def create_bindings(
+    api: CloudflareAPI, account_id: str, zone_id: str, tunnel_id: str,
+    desired: dict[str, dict[str, Any]],
+) -> None:
+    # Keep all routes disabled until DNS and every requested access rule exist.
+    for hostname in sorted(desired):
+        api.create_tunnel_dns(zone_id, hostname, tunnel_id)
     for hostname, route in desired.items():
-        if not route["whitelist"]:
-            continue
-        policy = selected_policies[hostname]
-        policy_payload = access_policy_payload(hostname, route["emails"])
-        if policy:
-            policy_id = str(policy.get("id") or "")
-            if not policy_id:
-                raise CloudflareAPIError(f"Access policy for {hostname} has no id")
-            api.update_access_policy(account_id, policy_id, policy_payload)
-        else:
-            policy = api.create_access_policy(account_id, policy_payload)
-            policy_id = str(policy.get("id") or "")
-            if not policy_id:
-                raise CloudflareAPIError(f"Created Access policy for {hostname} has no id")
-        managed_policies[hostname] = policy_id
-
-        app = selected_apps[hostname]
-        app_payload = access_app_payload(hostname, policy_id)
-        if app:
-            app_id = str(app.get("id") or "")
-            if not app_id:
-                raise CloudflareAPIError(f"Access application for {hostname} has no id")
-            api.update_access_app(account_id, app_id, app_payload)
-        else:
-            app = api.create_access_app(account_id, app_payload)
-            app_id = str(app.get("id") or "")
-            if not app_id:
-                raise CloudflareAPIError(f"Created Access application for {hostname} has no id")
-        managed_apps[hostname] = app_id
-    return managed_apps, managed_policies
-
-
-def cleanup_access(
-    api: CloudflareAPI,
-    account_id: str,
-    previous_apps: dict[str, str],
-    previous_policies: dict[str, str],
-    managed_apps: dict[str, str],
-    managed_policies: dict[str, str],
-) -> None:
-    for hostname, app_id in previous_apps.items():
-        if hostname not in managed_apps and app_id:
-            api.delete_access_app(account_id, app_id)
-    for hostname, policy_id in previous_policies.items():
-        if hostname not in managed_policies and policy_id:
-            api.delete_access_policy(account_id, policy_id)
-
-
-def reconcile_dns(
-    api: CloudflareAPI,
-    zone_id: str,
-    tunnel_id: str,
-    hostnames: set[str],
-    previous_records: dict[str, str],
-) -> dict[str, str]:
-    managed = {
-        hostname: api.ensure_tunnel_dns(
-            zone_id,
-            hostname,
-            tunnel_id,
-            previous_records.get(hostname, ""),
-        )
-        for hostname in sorted(hostnames)
-    }
-    return managed
-
-
-def cleanup_dns(
-    api: CloudflareAPI,
-    zone_id: str,
-    previous_records: dict[str, str],
-    managed_records: dict[str, str],
-) -> None:
-    for hostname, record_id in previous_records.items():
-        if hostname not in managed_records and record_id:
-            api.delete_dns_record(zone_id, record_id)
+        if route["whitelist"]:
+            policy = api.create_access_policy(
+                account_id, access_policy_payload(hostname, route["emails"]))
+            if not policy.get("id"):
+                raise CloudflareAPIError("Created Access policy has no ID")
+            app = api.create_access_app(
+                account_id, access_app_payload(hostname, policy["id"]))
+            if not app.get("id"):
+                raise CloudflareAPIError("Created Access application has no ID")
 
 
 def main() -> int:
@@ -296,21 +195,6 @@ def main() -> int:
     get = load_project_getter(root)
     ext_cfg = read_json(f"{args.provider_dir}/extension.json", {})
     ext_cfg = ext_cfg if isinstance(ext_cfg, dict) else {}
-    previous = read_json(args.routes_out, {})
-    previous = previous if isinstance(previous, dict) else {}
-    previous_hostnames = [
-        str(value).lower()
-        for value in previous.get("managed_hostnames", [])
-        if value
-    ]
-    previous_dns_records = previous.get("dns_records", {})
-    previous_dns_records = previous_dns_records if isinstance(previous_dns_records, dict) else {}
-    previous_access_apps = previous.get("access_apps", {})
-    previous_access_apps = previous_access_apps if isinstance(previous_access_apps, dict) else {}
-    previous_access_policies = previous.get("access_policies", {})
-    previous_access_policies = (
-        previous_access_policies if isinstance(previous_access_policies, dict) else {}
-    )
     services = read_json(args.services_file, {})
     services = services if isinstance(services, dict) else {}
 
@@ -327,10 +211,6 @@ def main() -> int:
     label = str(ext_cfg.get("label") or "Cloudflare")
     errors: list[str] = []
     routes: dict[str, dict[str, Any]] = {}
-    managed_hostnames: list[str] = []
-    dns_records: dict[str, str] = {}
-    access_apps: dict[str, str] = {}
-    access_policies: dict[str, str] = {}
     running = False
     authenticated = False
 
@@ -361,6 +241,13 @@ def main() -> int:
                 )
 
             policy = cloudflare_rules(root / "ports.filter.json", strict=True)
+            scanned = services.get("http_services")
+            if not isinstance(scanned, list):
+                raise ValueError("services.json must contain an http_services list")
+            for item in scanned:
+                if (not isinstance(item, dict) or not isinstance(item.get("port"), int)
+                        or not 1 <= item["port"] <= 65535 or item.get("scheme") not in {"http", "https"}):
+                    raise ValueError("Invalid scanned service; Cloudflare reset aborted")
             desired: dict[str, dict[str, Any]] = {}
             hostnames_seen: set[str] = set()
             all_services = routable_services(services)
@@ -385,22 +272,11 @@ def main() -> int:
                         "whitelist": bool(rule["whitelist"]),
                         "emails": list(rule["emails"]),
                     }
+            tunnel_config = reset_tunnel(api, account_id, zone_id, tunnel_id, desired)
             if any(route["whitelist"] for route in desired.values()):
                 ensure_one_time_pin(api, account_id, domain)
-
-            tunnel_config = api.tunnel_configuration(account_id, tunnel_id)
-            previous_hosts = adopt_matching_ingress(
-                tunnel_config,
-                desired,
-                set(previous_hostnames),
-                origin_host,
-            )
-            managed_hostnames = sorted(previous_hosts)
-            preserved, fallback = remove_managed_ingress(
-                tunnel_config,
-                previous_hosts | set(desired),
-            )
-            ingress: list[dict[str, Any]] = list(preserved)
+            create_bindings(api, account_id, zone_id, tunnel_id, desired)
+            ingress: list[dict[str, Any]] = []
             for hostname, route in desired.items():
                 entry: dict[str, Any] = {
                     "hostname": hostname,
@@ -424,43 +300,15 @@ def main() -> int:
                     ),
                 )
 
-            reconcile_access(
-                api,
-                account_id,
-                desired,
-                previous_access_apps,
-                previous_access_policies,
-                access_apps,
-                access_policies,
-            )
-            dns_records = reconcile_dns(
-                api,
-                zone_id,
-                tunnel_id,
-                set(desired),
-                previous_dns_records,
-            )
-            tunnel_config["ingress"] = ingress + [fallback]
-            api.update_tunnel_configuration(account_id, tunnel_id, tunnel_config)
-            managed_hostnames = sorted(desired)
-            cleanup_dns(api, zone_id, previous_dns_records, dns_records)
-            cleanup_access(
-                api,
-                account_id,
-                previous_access_apps,
-                previous_access_policies,
-                access_apps,
-                access_policies,
-            )
+            api.update_tunnel_configuration(account_id, tunnel_id, {
+                **tunnel_config, "ingress": ingress + [{"service": "http_status:404"}],
+            })
     except (CloudflareAPIError, ValueError, OSError) as exc:
         errors.append(str(exc))
         routes = {}
-        managed_hostnames = sorted(set(previous_hostnames) | set(managed_hostnames))
-        dns_records = {**previous_dns_records, **dns_records}
-        access_apps = {**previous_access_apps, **access_apps}
-        access_policies = {**previous_access_policies, **access_policies}
 
-    all_services = list(services.get("http_services", []))
+    all_services = services.get("http_services")
+    all_services = all_services if isinstance(all_services, list) else []
     for item in all_services:
         if not isinstance(item, dict):
             continue
@@ -470,7 +318,8 @@ def main() -> int:
             port_key = str(item.get("port") or "")
             if port_key in routes:
                 urls["cloudflare"] = routes[port_key]["url"]
-    write_json(args.services_file, services)
+    if isinstance(services.get("http_services"), list):
+        write_json(args.services_file, services)
 
     payload = {
         "provider_id": "cloudflare",
@@ -483,10 +332,6 @@ def main() -> int:
         "authenticated": authenticated,
         "route_schema": ROUTE_SCHEMA_VERSION,
         "origin_host": origin_host,
-        "managed_hostnames": managed_hostnames,
-        "dns_records": dns_records,
-        "access_apps": access_apps,
-        "access_policies": access_policies,
         "services": routes,
         "errors": errors,
     }

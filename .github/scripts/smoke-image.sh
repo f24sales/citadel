@@ -4,9 +4,8 @@
 set -euo pipefail
 image="${IMAGE_REF:?}"
 name="citadel-ci-${GITHUB_RUN_ID:?}"
-state="$name-state"
 shared="$(mktemp -d)"
-trap 'docker rm -f "$name" >/dev/null 2>&1 || true; docker volume rm "$state" >/dev/null 2>&1 || true; rmdir "$shared" 2>/dev/null || true' EXIT
+trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 
 check_ready() {
     for attempt in $(seq 1 45); do
@@ -32,20 +31,18 @@ fi
 docker rm -f "$name" >/dev/null
 
 # The same image, Unix mode; settings survive recreation, socket shares CADDY.
-docker volume create "$state" >/dev/null
 start --env CITADEL_WEBUI_TRANSPORT=unix --env CITADEL_WEBUI_SOCKET= \
-    --mount "type=bind,source=$shared,target=/opt/safrano9999/CITADEL/CADDY" \
-    --mount "type=volume,source=$state,target=/CITADEL"
+    --mount "type=bind,source=$shared,target=/opt/safrano9999/CITADEL/CITADEL_DATA"
 check_ready --unix-socket /opt/safrano9999/CITADEL/CADDY/citadel.sock http://localhost/
 for attempt in $(seq 1 45); do
     if docker logs "$name" 2>&1 | grep -Fq 'initial scan finished: 0'; then break; fi
     sleep 1
 done
 docker logs "$name" 2>&1 | grep -Fq 'initial scan finished: 0'
-docker exec "$name" sh -c 'test -f /CITADEL/ports.filter.json; printf "{\"blacklist\":[45678]}\n" > /CITADEL/ports.filter.json'
+docker exec "$name" sh -c 'test -f CITADEL_DATA/ports.filter.json; printf "{\"blacklist\":[45678]}\n" > CITADEL_DATA/ports.filter.json'
 docker stop --time 15 "$name" >/dev/null
-test ! -e "$shared/citadel.sock"
+test ! -e "$shared/CADDY/citadel.sock"
 docker rm "$name" >/dev/null
-start --mount "type=volume,source=$state,target=/CITADEL"
+start --mount "type=bind,source=$shared,target=/opt/safrano9999/CITADEL/CITADEL_DATA"
 check_ready http://127.0.0.1:11000/
-docker exec "$name" grep -q 45678 /CITADEL/ports.filter.json
+docker exec "$name" grep -q 45678 CITADEL_DATA/ports.filter.json

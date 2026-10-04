@@ -21,6 +21,8 @@ class SetupContainerfileTests(unittest.TestCase):
         shutil.copy2(ROOT / "setup.sh", self.root / "setup.sh")
         (self.root / "functions").mkdir()
         shutil.copy2(ROOT / "functions/runtime_state.py", self.root / "functions/runtime_state.py")
+        shutil.copy2(ROOT / "functions/webui_transport.py", self.root / "functions/webui_transport.py")
+        shutil.copy2(ROOT / "python_header.py", self.root / "python_header.py")
         for name in ("config.sh", "set_daemon.sh"):
             script = self.root / name
             script.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$0.called"\n')
@@ -31,7 +33,9 @@ class SetupContainerfileTests(unittest.TestCase):
             script = self.bin / name
             script.write_text('#!/bin/sh\ntouch "$FORBIDDEN_LOG"\nexit 99\n')
             script.chmod(0o755)
-        self.environment = {**os.environ, "PATH": f"{self.bin}:{os.defpath}",
+        self.environment = {**{key: value for key, value in os.environ.items()
+                               if not key.startswith(("CITADEL_", "CADDYFILE_"))},
+                            "PATH": f"{self.bin}:{os.defpath}",
                             "FORBIDDEN_LOG": str(self.root / "forbidden")}
 
     def execute(self, *arguments):
@@ -52,15 +56,17 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertTrue((self.root / "CADDY").is_dir())
         self.assertNotIn("Recommended bind mount", result.stdout)
 
-    def test_caddy_hint_uses_the_active_rendered_mount(self):
-        for prefix in ("", "#"):
-            with self.subTest(prefix=prefix):
-                (self.root / "citadel.container").write_text(
-                    f"{prefix}Volume={self.root}/CADDY:/opt/safrano9999/CITADEL/CADDY:z\n")
+    def test_caddy_hint_when_either_or_both_features_are_selected(self):
+        for transport, port, enabled in (("tcp", "", False), ("tcp", "0", False),
+                                         ("unix", "", True), ("tcp", "7000", True),
+                                         ("unix", "7000", True)):
+            with self.subTest(transport=transport, port=port):
+                (self.root / "config.conf").write_text(
+                    f"CITADEL_WEBUI_TRANSPORT={transport}\nCADDYFILE_START={port}\n")
                 result = self.execute()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual("Recommended bind mount" in result.stdout, prefix == "")
-                if not prefix:
+                self.assertEqual("Recommended bind mount" in result.stdout, enabled)
+                if enabled:
                     self.assertIn(f"Volume={self.root}/CADDY:/CADDY:ro,z", result.stdout)
                     self.assertIn("unix//CADDY/citadel.sock", result.stdout)
                     self.assertIn("import /CADDY/Caddyfile", result.stdout)
@@ -101,7 +107,7 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertEqual(json.loads(command)[-1], "/usr/local/bin/citadel-container")
         self.assertIn("alpine:", recipe)
         self.assertIn("@sha256:", recipe)
-        self.assertIn("python3 -s functions/runtime_state.py", recipe)
+        self.assertIn("python3 -s functions/runtime_state.py --image", recipe)
         self.assertNotIn("pip install", recipe)
 
     def test_real_renderer_keeps_bootstrap_and_conditional_mounts(self):
@@ -119,13 +125,12 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertNotIn("PublishPort=", quadlet)
         self.assertIn("Pull=never", quadlet)
         self.assertNotIn("AutoUpdate=", quadlet)
+        self.assertNotIn("cloudflare", quadlet.lower())
         self.assertIn("pull_policy: never", (self.root / "docker-compose.yml").read_text())
-        self.assertIn(f"Volume={self.root}/CADDY:/opt/safrano9999/CITADEL/CADDY:z", quadlet)
-        self.assertIn(f"Volume={self.root}/extensions/enabled/caddy/config.json:/opt/safrano9999/CITADEL/extensions/enabled/caddy/config.json:ro,z", quadlet)
         self.assertNotIn("Volume=z", quadlet)
-        self.assertIn(f"Volume={self.root}/icons:/opt/safrano9999/CITADEL/icons:z", quadlet)
-        self.assertIn(f"Volume={self.root}/CITADEL:/CITADEL:z", quadlet)
-        self.assertIn("#Volume=citadel-tailscale:/var/lib/tailscale:Z", quadlet)
+        self.assertIn(f"Volume={self.root}/CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z", quadlet)
+        self.assertEqual(sum(line.startswith("Volume=") for line in quadlet.splitlines()), 1)
+        self.assertIn("#Volume=citadel-tailscale:/opt/safrano9999/CITADEL/CITADEL_TAILSCALE:Z", quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / "config.conf"), quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / ".env"), quadlet)
         self.assertFalse((self.root / "forbidden").exists())

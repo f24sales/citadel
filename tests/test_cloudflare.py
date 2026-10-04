@@ -24,11 +24,8 @@ from cloudflare_policy import (  # noqa: E402
 )
 from cloudflare import (  # noqa: E402
     access_policy_payload,
-    adopt_matching_ingress,
     ensure_one_time_pin,
     one_time_pin_enabled,
-    reconcile_access,
-    remove_managed_ingress,
 )
 from cloudflare_api import CloudflareAPI, CloudflareAPIError  # noqa: E402
 import core  # noqa: E402
@@ -354,7 +351,10 @@ class CloudflareActivationTests(unittest.TestCase):
         self.api.tunnel_configuration.return_value = {"ingress": [{"service": "http_status:404"}]}
         self.api.access_apps.return_value = []
         self.api.access_policies.return_value = []
-        self.api.ensure_tunnel_dns.return_value = "dns-record"
+        self.api.dns_records.return_value = []
+        self.api.create_tunnel_dns.return_value = "dns-record"
+        self.api.create_access_policy.return_value = {"id": "new-policy"}
+        self.api.create_access_app.return_value = {"id": "new-app"}
         factory = patch.object(cloudflare_provider, "CloudflareAPI", return_value=self.api)
         self.factory = factory.start()
         self.addCleanup(factory.stop)
@@ -545,14 +545,18 @@ class CloudflareActivationTests(unittest.TestCase):
             {"hostname": "9999.services.example.net", "service": "http://127.0.0.1:9999"},
             {"service": "http_status:404"},
         ]}
+        self.api.dns_records.return_value = [{"id": "old-dns", "name": "9999.services.example.net",
+            "type": "CNAME", "content": "tunnel.cfargotunnel.com"}]
         code, payload = self.run_provider()
         self.assertEqual(code, 0)
         self.assertEqual(set(payload["services"]), {"8000"})
         ingress = self.api.update_tunnel_configuration.call_args.args[2]["ingress"]
-        self.assertEqual(ingress, [manual, {
+        self.assertEqual(ingress, [{
             "hostname": "8000.services.example.net", "service": "http://127.0.0.1:8000"},
             {"service": "http_status:404"}])
         self.api.delete_dns_record.assert_called_once_with("zone", "old-dns")
+        self.assertEqual(self.api.update_tunnel_configuration.call_args_list[0].args[2]["ingress"],
+                         [{"service": "http_status:404"}])
 
     def test_invalid_whitelist_still_prevents_resource_mutations(self):
         self.write("ports.filter.json", {"cloudflare": {"8000": {"whitelist": True, "emails": []}}})
@@ -561,6 +565,112 @@ class CloudflareActivationTests(unittest.TestCase):
         self.assertTrue(payload["considered"])
         self.assertTrue(payload["errors"])
         self.assert_no_remote_mutations()
+
+    def test_same_routes_are_deleted_and_created_on_every_scan_without_local_ids(self):
+        hostname = "8000.services.example.net"
+        self.api.dns_records.return_value = [{"id": "remote-dns", "name": hostname,
+            "type": "CNAME", "content": "tunnel.cfargotunnel.com"}]
+        self.api.access_apps.return_value = [{"id": "remote-app", "domain": hostname,
+            "name": f"CITADEL {hostname}"}]
+        self.api.access_policies.return_value = [{"id": "remote-policy",
+            "name": f"CITADEL email whitelist {hostname}"}]
+        self.api.access_identity_providers.return_value = [{"type": "onetimepin"}]
+        self.write("ports.filter.json", {"cloudflare": {"8000": {
+            "whitelist": True, "emails": ["user@example.net"]}}})
+        for contents in ("not JSON", '{"dns_records":{"unrelated":"never-delete"}}'):
+            (self.provider_dir / "routes.json").write_text(contents)
+            self.api.reset_mock()
+            code, payload = self.run_provider()
+            self.assertEqual(code, 0, payload["errors"])
+            for field in ("dns_records", "access_apps", "access_policies", "managed_hostnames"):
+                self.assertNotIn(field, payload)
+            self.api.delete_dns_record.assert_called_once_with("zone", "remote-dns")
+            self.api.delete_access_app.assert_called_once_with("account", "remote-app")
+            self.api.delete_access_policy.assert_called_once_with("account", "remote-policy")
+            self.api.create_tunnel_dns.assert_called_once_with("zone", hostname, "tunnel")
+            self.api.create_access_policy.assert_called_once()
+            self.api.create_access_app.assert_called_once()
+            calls = [call[0] for call in self.api.method_calls]
+            self.assertLess(calls.index("update_tunnel_configuration"), calls.index("delete_access_app"))
+            self.assertLess(calls.index("delete_access_policy"), calls.index("delete_dns_record"))
+            self.assertLess(calls.index("delete_dns_record"), calls.index("create_tunnel_dns"))
+            self.assertEqual(calls[-1], "update_tunnel_configuration")
+
+    def test_empty_scan_clears_the_configured_tunnel_without_a_routes_file(self):
+        self.write("services.json", {"http_services": []})
+        self.api.tunnel_configuration.return_value = {"ingress": [
+            {"hostname": "old.example.net", "service": "http://127.0.0.1:5000"},
+            {"service": "http_status:404"}], "warp-routing": {"enabled": False}}
+        self.api.dns_records.return_value = [{"id": "old", "name": "old.example.net",
+            "type": "CNAME", "content": "tunnel.cfargotunnel.com"}]
+        code, payload = self.run_provider()
+        self.assertEqual(code, 0, payload["errors"])
+        self.api.delete_dns_record.assert_called_once_with("zone", "old")
+        self.api.create_tunnel_dns.assert_not_called()
+        self.api.create_access_app.assert_not_called()
+        for call in self.api.update_tunnel_configuration.call_args_list:
+            self.assertEqual(call.args[2]["ingress"], [{"service": "http_status:404"}])
+            self.assertEqual(call.args[2]["warp-routing"], {"enabled": False})
+
+    def test_other_tunnel_dns_and_access_objects_are_never_deleted(self):
+        self.api.dns_records.return_value = [{"id": "foreign", "name": "other.example.net",
+            "type": "CNAME", "content": "another-tunnel.cfargotunnel.com"}]
+        self.api.access_apps.return_value = [{"id": "foreign-app", "domain": "other.example.net",
+            "name": "CITADEL other.example.net"}]
+        self.api.access_policies.return_value = [{"id": "foreign-policy",
+            "name": "CITADEL email whitelist other.example.net"}]
+        self.assertEqual(self.run_provider()[0], 0)
+        self.api.delete_dns_record.assert_not_called()
+        self.api.delete_access_app.assert_not_called()
+        self.api.delete_access_policy.assert_not_called()
+
+    def test_foreign_desired_dns_or_access_conflict_aborts_before_reset(self):
+        hostname = "8000.services.example.net"
+        for kind in ("dns", "access"):
+            with self.subTest(kind=kind):
+                self.api.reset_mock()
+                self.api.dns_records.return_value = ([{"id": "foreign", "name": hostname,
+                    "type": "CNAME", "content": "other.cfargotunnel.com"}] if kind == "dns" else [])
+                self.api.access_apps.return_value = ([{"id": "foreign", "domain": hostname,
+                    "name": "Manual application"}] if kind == "access" else [])
+                code, payload = self.run_provider()
+                self.assertEqual(code, 1)
+                self.assertTrue(payload["errors"])
+                self.assert_no_remote_mutations()
+
+    def test_delete_failure_stops_before_any_route_recreation(self):
+        self.api.dns_records.return_value = [{"id": "old", "name": "old.example.net",
+            "type": "CNAME", "content": "tunnel.cfargotunnel.com"}]
+        self.api.delete_dns_record.side_effect = CloudflareAPIError("delete denied")
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["services"], {})
+        self.api.create_tunnel_dns.assert_not_called()
+        self.api.update_tunnel_configuration.assert_called_once()
+
+    def test_create_failure_keeps_the_tunnel_empty(self):
+        self.api.create_tunnel_dns.side_effect = CloudflareAPIError("create denied")
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["services"], {})
+        self.api.update_tunnel_configuration.assert_called_once()
+        self.assertEqual(self.api.update_tunnel_configuration.call_args.args[2]["ingress"],
+                         [{"service": "http_status:404"}])
+
+    def test_incomplete_remote_inventory_aborts_before_reset(self):
+        self.api.dns_records.side_effect = CloudflareAPIError("page unavailable")
+        self.assertEqual(self.run_provider()[0], 1)
+        self.assert_no_remote_mutations()
+
+    def test_missing_or_invalid_scan_does_not_clear_working_routes(self):
+        for scan in ({}, {"http_services": None}, {"http_services": "broken"},
+                     {"http_services": [{"port": 0, "scheme": "http"}]}):
+            with self.subTest(scan=scan):
+                self.write("services.json", scan)
+                code, payload = self.run_provider()
+                self.assertEqual(code, 1)
+                self.assertTrue(payload["errors"])
+                self.assert_no_remote_mutations()
 
     def test_readiness_only_verifies_trimmed_token(self):
         self.settings["CLOUDFLARE_API_TOKEN"] = "  unit-test-token  "
@@ -571,50 +681,6 @@ class CloudflareActivationTests(unittest.TestCase):
 
 
 class CloudflareProviderTests(unittest.TestCase):
-    def test_preserves_foreign_ingress_and_keeps_fallback(self) -> None:
-        config = {
-            "ingress": [
-                {"hostname": "foreign.example.net", "service": "http://127.0.0.1:1"},
-                {"hostname": "399.example.net", "service": "http://127.0.0.1:399"},
-                {"service": "http_status:404"},
-            ]
-        }
-        preserved, fallback = remove_managed_ingress(config, {"399.example.net"})
-        self.assertEqual([item.get("hostname") for item in preserved], ["foreign.example.net"])
-        self.assertEqual(fallback, {"service": "http_status:404"})
-
-    def test_replaces_unmanaged_ingress_for_desired_hostname(self) -> None:
-        config = {
-            "ingress": [
-                {"hostname": "399.example.net", "service": "http://other:399"},
-                {"hostname": "foreign.example.net", "service": "http://other:400"},
-                {"service": "http_status:404"},
-            ]
-        }
-        preserved, fallback = remove_managed_ingress(config, {"399.example.net"})
-        self.assertEqual(
-            preserved,
-            [{"hostname": "foreign.example.net", "service": "http://other:400"}],
-        )
-        self.assertEqual(fallback, {"service": "http_status:404"})
-
-    def test_adopts_only_ingress_with_exact_origin(self) -> None:
-        config = {
-            "ingress": [
-                {"hostname": "399.example.net", "service": "http://127.0.0.1:399"},
-                {"hostname": "400.example.net", "service": "http://other:400"},
-                {"service": "http_status:404"},
-            ]
-        }
-        desired = {
-            "399.example.net": {"scheme": "http", "port": 399},
-            "400.example.net": {"scheme": "http", "port": 400},
-        }
-        self.assertEqual(
-            adopt_matching_ingress(config, desired, set(), "127.0.0.1"),
-            {"399.example.net"},
-        )
-
     def test_access_policy_uses_exact_email_rules(self) -> None:
         payload = access_policy_payload(
             "399.example.net",
@@ -666,109 +732,6 @@ class CloudflareProviderTests(unittest.TestCase):
 
         self.assertTrue(one_time_pin_enabled(ensure_one_time_pin(FakeAPI(), "account", "example.net")))
 
-    def test_access_refuses_unmanaged_application(self) -> None:
-        class FakeAPI:
-            def access_apps(self, _account_id):
-                return [{"id": "foreign", "domain": "399.example.net", "name": "Foreign"}]
-
-            def access_policies(self, _account_id):
-                return []
-
-        with self.assertRaises(CloudflareAPIError):
-            reconcile_access(
-                FakeAPI(),
-                "account",
-                {
-                    "399.example.net": {
-                        "whitelist": True,
-                        "emails": ["user@example.net"],
-                    }
-                },
-                {},
-                {},
-                {},
-                {},
-            )
-
-    def test_access_adopts_exact_citadel_names(self) -> None:
-        class FakeAPI:
-            def access_apps(self, _account_id):
-                return [{"id": "app", "domain": "399.example.net", "name": "CITADEL 399.example.net"}]
-
-            def access_policies(self, _account_id):
-                return [{"id": "policy", "name": "CITADEL email whitelist 399.example.net"}]
-
-            def update_access_policy(self, _account_id, policy_id, _payload):
-                self.policy_id = policy_id
-
-            def update_access_app(self, _account_id, app_id, _payload):
-                self.app_id = app_id
-
-        api = FakeAPI()
-        apps, policies = reconcile_access(
-            api,
-            "account",
-            {"399.example.net": {"whitelist": True, "emails": ["user@example.net"]}},
-            {},
-            {},
-            {},
-            {},
-        )
-        self.assertEqual(apps, {"399.example.net": "app"})
-        self.assertEqual(policies, {"399.example.net": "policy"})
-        self.assertEqual(api.app_id, "app")
-        self.assertEqual(api.policy_id, "policy")
-
-    def test_dns_refuses_unmanaged_record(self) -> None:
-        api = CloudflareAPI("token")
-
-        def request(method, _path, **_kwargs):
-            if method == "GET":
-                return [{"id": "foreign", "type": "CNAME"}]
-            return {}
-
-        api.request = request
-        with self.assertRaises(CloudflareAPIError):
-            api.ensure_tunnel_dns("zone", "399.example.net", "tunnel")
-
-    def test_dns_adopts_cname_for_same_tunnel(self) -> None:
-        api = CloudflareAPI("token")
-        calls = []
-
-        def request(method, path, **kwargs):
-            calls.append((method, path, kwargs))
-            if method == "GET":
-                return [{
-                    "id": "record",
-                    "type": "CNAME",
-                    "content": "tunnel.cfargotunnel.com",
-                    "proxied": True,
-                }]
-            return {}
-
-        api.request = request
-        self.assertEqual(
-            api.ensure_tunnel_dns("zone", "399.example.net", "tunnel"),
-            "record",
-        )
-        self.assertEqual(calls[-1][0], "PUT")
-
-    def test_dns_ignores_mail_records_when_creating_apex_cname(self) -> None:
-        api = CloudflareAPI("token")
-        calls = []
-
-        def request(method, path, **kwargs):
-            calls.append((method, path, kwargs))
-            if method == "GET":
-                return [
-                    {"id": "mx", "type": "MX", "content": "mail.example.net"},
-                    {"id": "txt", "type": "TXT", "content": "v=spf1"},
-                ]
-            return {"id": "created"}
-
-        api.request = request
-        self.assertEqual(api.ensure_tunnel_dns("zone", "example.net", "tunnel"), "created")
-        self.assertEqual(calls[-1][0], "POST")
 
     def test_delete_is_idempotent_for_missing_resource(self) -> None:
         api = CloudflareAPI("token")
@@ -780,6 +743,33 @@ class CloudflareProviderTests(unittest.TestCase):
         api.delete_dns_record("zone", "record")
         api.delete_access_app("account", "app")
         api.delete_access_policy("account", "policy")
+
+
+class CloudflareInventoryTests(unittest.TestCase):
+    def test_dns_inventory_reads_all_pages(self):
+        api = CloudflareAPI("test")
+        api.request = Mock(side_effect=[
+            [{"id": str(number)} for number in range(100)], [{"id": "last"}]])
+        self.assertEqual(len(api.dns_records("zone")), 101)
+        self.assertEqual(api.request.call_args.kwargs["query"], {"page": 2, "per_page": 100})
+
+    def test_repeated_pages_or_invalid_resource_lists_are_rejected(self):
+        api = CloudflareAPI("test")
+        page = [{"id": str(number)} for number in range(100)]
+        api.request = Mock(side_effect=[page, page])
+        with self.assertRaises(CloudflareAPIError):
+            api.dns_records("zone")
+        for response in ({}, [None], [{"id": ""}]):
+            api.request = Mock(return_value=response)
+            with self.assertRaises(CloudflareAPIError):
+                api.access_apps("account")
+
+    def test_dns_is_always_created_not_upserted(self):
+        api = CloudflareAPI("test")
+        api.request = Mock(return_value={"id": "new-record"})
+        self.assertEqual(api.create_tunnel_dns("zone", "8000.example.net", "tunnel"), "new-record")
+        self.assertEqual(api.request.call_args.args, ("POST", "/zones/zone/dns_records"))
+        self.assertEqual(api.request.call_args.kwargs["payload"]["content"], "tunnel.cfargotunnel.com")
 
 
 class CloudflareCoreTests(unittest.TestCase):

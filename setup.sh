@@ -3,6 +3,7 @@ set -euo pipefail
 
 [ "$#" -eq 0 ] || { echo 'Usage: ./setup.sh (no arguments)' >&2; exit 2; }
 SCRIPT_DIR="$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+cd "$SCRIPT_DIR"
 USER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 # config.sh is hardlinked from SCRIPTS/safrano9999/config/config.sh.
@@ -24,15 +25,15 @@ printf '  mkdir -p %q && ln -s %q %q\n' \
     "$USER_CONFIG_DIR/containers/systemd/citadel.container"
 printf '\nAfter choosing one: systemctl --user daemon-reload\n'
 
-# Reuse the renderer's conditional mount decision, not another env parser.
-quadlet="$SCRIPT_DIR/$quadlet_name.container"
-if [[ -f "$quadlet" ]]; then
-    caddy_mount="$(sed -n 's|^Volume=\(.*\):/opt/safrano9999/CITADEL/CADDY:[^:]*$|\1|p' "$quadlet")"
-    if [[ -n "$caddy_mount" ]]; then
-        printf '\nRecommended bind mount in your Caddy Quadlet:\n'
-        printf '  Volume=%s:/CADDY:ro,z\n' "$caddy_mount"
-        printf '  Unix WebUI, if selected: reverse_proxy unix//CADDY/citadel.sock\n'
-        printf '  Generated routes, if selected: import /CADDY/Caddyfile\n'
-        printf 'Keep this mount unchanged when switching between service and container.\n'
-    fi
+# Read settings through the application's shared loader and transport resolver.
+if PYTHONPATH="$SCRIPT_DIR:$SCRIPT_DIR/functions" python3 -s -c '
+from python_header import get_int
+from webui_transport import unix_socket_path
+raise SystemExit(not (get_int("CADDYFILE_START") > 0 or unix_socket_path() is not None))
+'; then
+    printf '\nRecommended bind mount in your Caddy Quadlet:\n'
+    printf '  Volume=%s/CADDY:/CADDY:ro,z\n' "$SCRIPT_DIR"
+    printf '  Unix WebUI, if selected: reverse_proxy unix//CADDY/citadel.sock\n'
+    printf '  Generated routes, if selected: import /CADDY/Caddyfile\n'
+    printf 'Keep this mount unchanged when switching between service and container.\n'
 fi

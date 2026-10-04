@@ -77,7 +77,9 @@ def start_tailscale(runtime, root):
     # A mounted host socket is reused, never replaced or owned by this process.
     external = Path("/var/run/tailscale/tailscaled.sock").exists()
     if not external:
-        command = ["tailscaled", "--state=/var/lib/tailscale/tailscaled.state"]
+        state_dir = root / "CITADEL_TAILSCALE"
+        state_dir.mkdir(mode=0o700, exist_ok=True)
+        command = ["tailscaled", f"--state={state_dir}/tailscaled.state"]
         if os.environ.get("TS_USERSPACE") == "1":
             command.append("--tun=userspace-networking")
         runtime.start(*command)
@@ -122,7 +124,9 @@ def main():
     os.chdir(ROOT)
     sys.path[:0] = [str(ROOT), str(ROOT / "functions"), str(ROOT / "functions/providers")]
     import python_header  # Load shared config; never source/eval user input.
+    from runtime_state import prepare_image
     from webui_transport import listener_ready
+    prepare_image(ROOT)
     Path("/run/citadel").mkdir(parents=True, exist_ok=True)
     runtime = Runtime()
     def stop(*_):

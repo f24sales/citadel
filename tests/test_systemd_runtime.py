@@ -9,6 +9,16 @@ UNIT_DIR = ROOT / "image/runtime/etc/systemd/system"
 
 
 class CitadelSystemdRuntimeTests(unittest.TestCase):
+    def test_tailscale_state_matches_alpine_mount_path(self) -> None:
+        state = "/opt/safrano9999/CITADEL/CITADEL_TAILSCALE"
+        for unit in ("tailscaled.service", "tailscale-up.service"):
+            dropin = UNIT_DIR / f"{unit}.d/citadel-state.conf"
+            self.assertIn(f"Environment=TS_STATE_DIR={state}", dropin.read_text())
+        self.assertIn(f"-tailscale:{state}:Z", (ROOT / "container.example").read_text())
+        entrypoint = (ROOT / "container/entrypoint.py").read_text()
+        self.assertIn('root / "CITADEL_TAILSCALE"', entrypoint)
+        self.assertNotIn("/var/lib/tailscale", entrypoint)
+
     def test_example_uses_one_to_one_ports_without_allocated_variants(self) -> None:
         example = (ROOT / "config.conf_example").read_text(encoding="utf-8")
         values = dict(
