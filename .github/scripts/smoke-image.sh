@@ -5,7 +5,13 @@ set -euo pipefail
 image="${IMAGE_REF:?}"
 name="citadel-ci-${GITHUB_RUN_ID:?}"
 shared="$(mktemp -d)"
-trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+cleanup() {
+    status=$?
+    if (( status != 0 )); then docker logs "$name" || true; fi
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    exit "$status"
+}
+trap cleanup EXIT
 
 check_ready() {
     for attempt in $(seq 1 45); do
@@ -25,7 +31,8 @@ start() {
 # No credentials or volumes: WebUI must still start, with an absent filter file.
 start
 check_ready http://127.0.0.1:11000/
-if docker top "$name" -eo comm | grep -Eq '^(tailscaled|cloudflared)$'; then
+processes="$(docker top "$name" -eo pid,comm)"
+if grep -Eq '[[:space:]](tailscaled|cloudflared)$' <<< "$processes"; then
     echo 'Unexpected tunnel daemon without credentials' >&2; exit 1
 fi
 docker rm -f "$name" >/dev/null
@@ -33,7 +40,7 @@ docker rm -f "$name" >/dev/null
 # The same image, Unix mode; settings survive recreation, socket shares CADDY.
 start --env CITADEL_WEBUI_TRANSPORT=unix --env CITADEL_WEBUI_SOCKET= \
     --mount "type=bind,source=$shared,target=/opt/safrano9999/CITADEL/CITADEL_DATA"
-check_ready --unix-socket /opt/safrano9999/CITADEL/CADDY/citadel.sock http://localhost/
+check_ready --unix-socket /opt/safrano9999/CITADEL/CITADEL_DATA/CADDY/citadel.sock http://localhost/
 for attempt in $(seq 1 45); do
     if docker logs "$name" 2>&1 | grep -Fq 'initial scan finished: 0'; then break; fi
     sleep 1

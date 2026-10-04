@@ -191,6 +191,7 @@ def main() -> int:
     functions_dir = root / "functions"
     sys.path.insert(0, str(functions_dir))
     from cloudflare_policy import cloudflare_rules, resolve_hostname
+    from runtime_state import data_directory
 
     get = load_project_getter(root)
     ext_cfg = read_json(f"{args.provider_dir}/extension.json", {})
@@ -240,7 +241,7 @@ def main() -> int:
                     f"CITADEL_CLOUDFLARE_DOMAIN={domain} is outside zone {zone_domain}"
                 )
 
-            policy = cloudflare_rules(root / "ports.filter.json", strict=True)
+            policy = cloudflare_rules(data_directory(root) / "ports.filter.json", strict=True)
             scanned = services.get("http_services")
             if not isinstance(scanned, list):
                 raise ValueError("services.json must contain an http_services list")

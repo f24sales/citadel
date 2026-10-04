@@ -18,12 +18,12 @@ class HealthTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        self.write("services.json", {"http_services": [{"port": 8000, "name": "Example", "urls": {"tailscale": "https://test.ts.net:8000"}}]})
+        self.write("CITADEL_DATA/services.json", {"http_services": [{"port": 8000, "name": "Example", "urls": {"tailscale": "https://test.ts.net:8000"}}]})
         self.write("cache/8000.json", {"kind": "html"})
-        self.write("extensions/providers_state.json", {"providers": {"tailscale": {"status": "ok"}}})
+        self.write("CITADEL_DATA/providers_state.json", {"providers": {"tailscale": {"status": "ok"}}})
         self.write("extensions/enabled/tailscale/extension.json", {"enabled": True})
-        self.write("extensions/enabled/tailscale/routes.json", {"considered": True, "available": True, "services": {"8000": {"url": "https://test.ts.net:8000"}}})
-        (self.base / "last_scan.txt").write_text("2026-09-16 18:27:03")
+        self.write("CITADEL_DATA/tailscale-routes.json", {"considered": True, "available": True, "services": {"8000": {"url": "https://test.ts.net:8000"}}})
+        (self.base / "CITADEL_DATA/last_scan.txt").write_text("2026-09-16 18:27:03")
 
     def write(self, name, data):
         p = self.base / name
@@ -47,17 +47,17 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(snapshot(self.base, ["tailscale"])["status"], "FAIL")
 
     def test_missing_index_means_not_tested(self):
-        (self.base / "services.json").write_text("not json")
+        (self.base / "CITADEL_DATA/services.json").write_text("not json")
         result = snapshot(self.base, ["tailscale"])
         self.assertEqual(result["status"], "FAIL")
         self.assertEqual(result["extensions"][0]["status"], "NOT_TESTED")
 
     def test_missing_assigned_route_fails(self):
-        self.write("extensions/enabled/tailscale/routes.json", {"considered": True, "available": True, "services": {}})
+        self.write("CITADEL_DATA/tailscale-routes.json", {"considered": True, "available": True, "services": {}})
         self.assertEqual(snapshot(self.base, ["tailscale"])["status"], "FAIL")
 
     def test_provider_failure_is_not_skip(self):
-        self.write("extensions/providers_state.json", {"providers": {"tailscale": {"status": "error"}}})
+        self.write("CITADEL_DATA/providers_state.json", {"providers": {"tailscale": {"status": "error"}}})
         self.assertEqual(snapshot(self.base, ["tailscale"])["extensions"][0]["status"], "FAIL")
 
     def test_no_path_traversal(self):

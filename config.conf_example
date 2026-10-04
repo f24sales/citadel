@@ -2,7 +2,7 @@
 #choices: tcp unix
 CITADEL_WEBUI_TRANSPORT=tcp
 
-# Unix transport only. Empty uses CADDY/citadel.sock inside this repository,
+# Unix transport only. Empty uses CITADEL_DATA/CADDY/citadel.sock,
 # identically for the host service and container. Absolute overrides are optional.
 #when: CITADEL_WEBUI_TRANSPORT=unix
 CITADEL_WEBUI_SOCKET=
@@ -21,7 +21,7 @@ CITADEL_WEBUI_PORT=11000
 CITADEL_HIDE_HTTP_WEBUI_DUPE=1
 
 # Optional Caddyfile export. Empty/0 disables generation, not the WebUI.
-# The caddy extension's config.json specifies Caddy's hosts and backend address.
+# CITADEL_DATA/caddy-config.json specifies Caddy's hosts and backend address.
 CADDYFILE_START=
 
 # Empty/blank uses step 1 and rebuilds all assignments on every scan.

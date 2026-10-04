@@ -70,12 +70,12 @@ class ScanIntegrationTests(unittest.TestCase):
                 result = subprocess.run(["bash", "scan.sh", "--provider", "localhost"],
                                         cwd=base, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                return json.loads((base / "services.json").read_text())
+                return json.loads((base / "CITADEL_DATA/services.json").read_text())
 
             first = scan()
             self.assertEqual(first["http_services"][0]["title"], "First")
             self.assertEqual(fixture["icon_requests"], 1)
-            logo = base / f"icons/{port}.svg"
+            logo = base / f"CITADEL_DATA/icons/{port}.svg"
             before = (logo.read_bytes(), logo.stat().st_mtime_ns)
             fixture["title"] = "Changed"
             # Reuse must work without any old cache metadata at all.
@@ -95,6 +95,6 @@ class ScanIntegrationTests(unittest.TestCase):
             self.assertEqual(rejected["other_ports"][0]["port"], port)
             listeners.write_text("")
             self.assertEqual(scan()["http_services"], [])
-            self.assertEqual(json.loads((ext / "routes.json").read_text())["services"], {})
+            self.assertEqual(json.loads((base / "CITADEL_DATA/localhost-routes.json").read_text())["services"], {})
             self.assertFalse((base / f"cache/{port}.json").exists())
             self.assertTrue(logo.is_file())

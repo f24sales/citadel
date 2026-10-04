@@ -27,6 +27,7 @@ from python_header import get, get_port  # noqa: F401
 import core
 import health
 from webui_transport import bind_unix_socket, unix_socket_path, probe_target
+from runtime_state import prepare_state
 
 
 class EditTokenGuard:
@@ -143,8 +144,8 @@ _jinja = Environment(
     autoescape=select_autoescape(["html", "xml"]),
 )
 
-(core.BASE_DIR / "icons").mkdir(exist_ok=True)
-app.mount("/icons", StaticFiles(directory=str(core.BASE_DIR / "icons")), name="icons")
+prepare_state(core.BASE_DIR)
+app.mount("/icons", StaticFiles(directory=str(core.DATA_DIR / "icons")), name="icons")
 app.mount("/assets", StaticFiles(directory=str(core.BASE_DIR / "assets")), name="assets")
 
 

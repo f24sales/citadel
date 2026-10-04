@@ -38,8 +38,8 @@ COPY extensions/enabled/tailscale/extension.json extensions/enabled/tailscale/co
 COPY image/runtime/usr/local/bin/tailscale-serve-reset.sh /usr/local/bin/
 COPY container/entrypoint.py /usr/local/bin/citadel-container
 
-# Mutable settings only; atomic_write_json follows these links when updating.
-RUN mkdir -p icons cache CADDY extensions/disabled /run/citadel \
+# Application code and runtime data are separate, without path aliases.
+RUN mkdir -p extensions/disabled /run/citadel \
  && python3 -s functions/runtime_state.py --image \
  && chmod 0755 scan.sh unroute.sh /usr/local/bin/citadel-container /usr/local/bin/tailscale-serve-reset.sh
 

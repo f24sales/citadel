@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 from common import now_iso, read_json, write_json
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from runtime_state import provider_output
 
 
 PROVIDER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -131,27 +133,13 @@ def main() -> int:
             script_path = str(script_dir / f"{provider_impl}.py")
             if Path(script_path).resolve().parent != script_dir.resolve():
                 raise ValueError("Provider script escapes implementation directory")
-            filename = "status.json" if kind == "export" else "routes.json"
-            output_root = Path(args.routes_dir or args.enabled_dir).resolve()
-            routes_out = str(Path(args.routes_dir).absolute() / provider_id / filename
-                             if args.routes_dir else Path(provider_dir) / filename)
-            output = Path(routes_out)
-            # config.sh persists provider routes.json via a file symlink into
-            # a named volume. Validate the directory separately so that this
-            # exception cannot permit an escaping extension/runtime directory.
-            if not output.parent.resolve().is_relative_to(output_root):
-                raise ValueError("Extension output escapes runtime directory")
-            resolved_output = output.resolve()
-            if not resolved_output.is_relative_to(output_root):
-                link_target = Path(os.readlink(output)) if output.is_symlink() else None
-                persistent_routes = (
-                    kind == "provider" and output.name == "routes.json"
-                    and link_target is not None and link_target.is_absolute()
-                    and ".." not in link_target.parts
-                    and (not resolved_output.exists() or resolved_output.is_file())
-                )
-                if not persistent_routes:
-                    raise ValueError("Extension output escapes runtime directory")
+            project = Path(args.enabled_dir).absolute().parent.parent
+            output = provider_output(project, provider_id, kind)
+            if args.routes_dir:
+                output = Path(args.routes_dir).absolute() / output.name
+            if output.is_symlink():
+                raise ValueError("Extension output must be a direct file, not a symlink")
+            routes_out = str(output)
         except (ValueError, OSError, RuntimeError) as error:
             state["errors"].append(f"Provider {provider_id}: {error}")
             state["providers"][provider_id] = {

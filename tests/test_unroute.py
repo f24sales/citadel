@@ -41,14 +41,14 @@ class UnrouteTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(state()))
         (self.root / "config.conf").write_text("CITADEL_WEBUI_PORT=11000\n")
-        (self.root / "services.json").write_text(json.dumps({"http_services": [
+        (self.root / "CITADEL_DATA/services.json").write_text(json.dumps({"http_services": [
             {"port": 11000, "urls": {"tailscale": "https://node.example.ts.net:11000",
                                     "localhost": "http://127.0.0.1:11000"}}]}))
         (self.root / "cache").mkdir()
         (self.root / "cache/11000.json").write_text(json.dumps({
             "title": "Citadel", "tailscale_url": "https://node.example.ts.net:11000"}))
-        (self.root / "icons").mkdir()
-        (self.root / "icons/11000.svg").write_text("<svg/>")
+        (self.root / "CITADEL_DATA/icons").mkdir()
+        (self.root / "CITADEL_DATA/icons/11000.svg").write_text("<svg/>")
         self.removals = []
 
     def run_unroute(self, live=None, ports=None, fail_ports=(), serve=True):
@@ -81,10 +81,10 @@ class UnrouteTests(unittest.TestCase):
             payload = json.loads(path.read_text())
             self.assertEqual(payload["services"], {})
             self.assertFalse(payload["available"])
-        row = json.loads((self.root / "services.json").read_text())["http_services"][0]
+        row = json.loads((self.root / "CITADEL_DATA/services.json").read_text())["http_services"][0]
         self.assertEqual(row["urls"], {"localhost": "http://127.0.0.1:11000"})
         self.assertEqual(json.loads((self.root / "cache/11000.json").read_text()), {"title": "Citadel"})
-        self.assertEqual((self.root / "icons/11000.svg").read_text(), "<svg/>")
+        self.assertEqual((self.root / "CITADEL_DATA/icons/11000.svg").read_text(), "<svg/>")
 
     def test_requested_port_is_removed_without_saved_state_or_ownership(self):
         for path in self.paths:

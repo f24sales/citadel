@@ -129,10 +129,11 @@ class DashboardCoreTests(unittest.TestCase):
     def test_citadel_service_is_featured_and_sorted_first(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
+            (base / "CITADEL_DATA").mkdir()
             enabled = base / "extensions" / "enabled"
             localhost = enabled / "localhost"
             localhost.mkdir(parents=True)
-            (base / "services.json").write_text(
+            (base / "CITADEL_DATA/services.json").write_text(
                 json.dumps({
                     "http_services": [
                         {"port": 11000, "name": "CODEANALYST"},
@@ -146,7 +147,7 @@ class DashboardCoreTests(unittest.TestCase):
                 json.dumps({"label": "Localhost"}),
                 encoding="utf-8",
             )
-            (localhost / "routes.json").write_text(
+            (base / "CITADEL_DATA/localhost-routes.json").write_text(
                 json.dumps({
                     "considered": True,
                     "available": True,
@@ -167,7 +168,7 @@ class DashboardCoreTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            (base / "extensions" / "providers_state.json").write_text(
+            (base / "CITADEL_DATA/providers_state.json").write_text(
                 json.dumps({
                     "considered_providers": ["localhost"],
                     "available_providers": ["localhost"],
@@ -175,7 +176,7 @@ class DashboardCoreTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            (base / "ports.filter.json").write_text(
+            (base / "CITADEL_DATA/ports.filter.json").write_text(
                 json.dumps({"cloudflare": {}}),
                 encoding="utf-8",
             )
@@ -190,12 +191,12 @@ class DashboardCoreTests(unittest.TestCase):
             }
             old_port = os.environ.get("CITADEL_WEBUI_PORT")
             try:
-                core.SERVICES_FILE = base / "services.json"
-                core.LAST_SCAN_FILE = base / "last_scan.txt"
+                core.SERVICES_FILE = base / "CITADEL_DATA/services.json"
+                core.LAST_SCAN_FILE = base / "CITADEL_DATA/last_scan.txt"
                 core.ENABLED_EXT_DIR = enabled
-                core.PROVIDERS_STATE_FILE = base / "extensions" / "providers_state.json"
+                core.PROVIDERS_STATE_FILE = base / "CITADEL_DATA/providers_state.json"
                 core.UI_CONFIG_FILE = base / "extensions" / "ui.json"
-                core.PORT_FILTER_FILE = base / "ports.filter.json"
+                core.PORT_FILTER_FILE = base / "CITADEL_DATA/ports.filter.json"
                 os.environ["CITADEL_WEBUI_PORT"] = "10999"
                 dashboard = core.build_dashboard()
             finally:
@@ -213,7 +214,8 @@ class DashboardCoreTests(unittest.TestCase):
     def test_stale_host_discovery_is_not_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            (base / "services.json").write_text(
+            (base / "CITADEL_DATA").mkdir()
+            (base / "CITADEL_DATA/services.json").write_text(
                 json.dumps({"http_services": [{"port": 11000}], "other_ports": []}),
                 encoding="utf-8",
             )
@@ -234,7 +236,7 @@ class DashboardCoreTests(unittest.TestCase):
             original_services = core.SERVICES_FILE
             original_enabled = core.ENABLED_EXT_DIR
             try:
-                core.SERVICES_FILE = base / "services.json"
+                core.SERVICES_FILE = base / "CITADEL_DATA/services.json"
                 core.ENABLED_EXT_DIR = base / "extensions" / "enabled"
                 dashboard = core.build_dashboard()
             finally:
@@ -264,9 +266,9 @@ class CloudflareDefaultsTests(unittest.TestCase):
                 "--root",
                 str(base),
                 "--services-file",
-                str(base / "services.json"),
+                str(base / "CITADEL_DATA/services.json"),
                 "--policy-file",
-                str(base / "ports.filter.json"),
+                str(base / "CITADEL_DATA/ports.filter.json"),
             ]
             sys.stdin = self.TTYInput(stdin)
             return cloudflare_defaults.main()
@@ -279,11 +281,12 @@ class CloudflareDefaultsTests(unittest.TestCase):
     def test_env_email_defaults_protect_new_ports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            (base / "services.json").write_text(
+            (base / "CITADEL_DATA").mkdir()
+            (base / "CITADEL_DATA/services.json").write_text(
                 json.dumps({"http_services": [{"port": 12001}, {"port": 12002}]}),
                 encoding="utf-8",
             )
-            (base / "ports.filter.json").write_text(
+            (base / "CITADEL_DATA/ports.filter.json").write_text(
                 json.dumps({
                     "whitelist": [],
                     "blacklist": [],
@@ -298,7 +301,7 @@ class CloudflareDefaultsTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(self.run_defaults(base), 0)
-            policy = json.loads((base / "ports.filter.json").read_text(encoding="utf-8"))
+            policy = json.loads((base / "CITADEL_DATA/ports.filter.json").read_text(encoding="utf-8"))
             self.assertEqual(policy["cloudflare_defaults"]["emails"], ["admin@example.com", "ops@example.com"])
             self.assertEqual(policy["cloudflare"]["12001"]["subdomains"], ["custom"])
             self.assertFalse(policy["cloudflare"]["12001"]["whitelist"])
@@ -309,16 +312,17 @@ class CloudflareDefaultsTests(unittest.TestCase):
     def test_missing_env_email_skips_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            (base / "services.json").write_text(
+            (base / "CITADEL_DATA").mkdir()
+            (base / "CITADEL_DATA/services.json").write_text(
                 json.dumps({"http_services": [{"port": 399}]}),
                 encoding="utf-8",
             )
-            (base / "ports.filter.json").write_text(
+            (base / "CITADEL_DATA/ports.filter.json").write_text(
                 json.dumps({"whitelist": [], "blacklist": [], "cloudflare": {}}),
                 encoding="utf-8",
             )
             self.assertEqual(self.run_defaults(base, email=""), 0)
-            policy = json.loads((base / "ports.filter.json").read_text(encoding="utf-8"))
+            policy = json.loads((base / "CITADEL_DATA/ports.filter.json").read_text(encoding="utf-8"))
             self.assertNotIn("cloudflare_defaults", policy)
             self.assertEqual(policy["cloudflare"], {})
 
@@ -332,10 +336,10 @@ class CloudflareActivationTests(unittest.TestCase):
         self.base = Path(temporary.name)
         self.provider_dir = self.base / "extensions/enabled/cloudflare"
         self.manifest()
-        self.write("services.json", {"http_services": [{"port": 8000, "scheme": "http"}]})
+        self.write("CITADEL_DATA/services.json", {"http_services": [{"port": 8000, "scheme": "http"}]})
         self.write("cache/8000.json", {"kind": "html"})
-        self.write("extensions/providers_state.json", {"providers": {"cloudflare": {"status": "ok"}}})
-        (self.base / "last_scan.txt").write_text("2026-10-02T12:00:00Z")
+        self.write("CITADEL_DATA/providers_state.json", {"providers": {"cloudflare": {"status": "ok"}}})
+        (self.base / "CITADEL_DATA/last_scan.txt").write_text("2026-10-02T12:00:00Z")
         self.settings = {
             "CLOUDFLARE_API_TOKEN": "unit-test-token",
             "CITADEL_CLOUDFLARE_DOMAIN": "services.example.net",
@@ -374,10 +378,10 @@ class CloudflareActivationTests(unittest.TestCase):
         })
 
     def run_provider(self):
-        output = self.provider_dir / "routes.json"
+        output = self.base / "cache/cloudflare-routes.json"
         with (patch.object(cloudflare_provider, "load_project_getter", return_value=self.getter),
               patch.object(sys, "argv", ["cloudflare.py", "--provider-dir", str(self.provider_dir),
-                                         "--routes-out", str(output), "--services-file", str(self.base / "services.json")])):
+                                         "--routes-out", str(output), "--services-file", str(self.base / "CITADEL_DATA/services.json")])):
             code = cloudflare_provider.main()
         return code, json.loads(output.read_text())
 
@@ -480,9 +484,9 @@ class CloudflareActivationTests(unittest.TestCase):
         self.manifest(enabled=False)
         with (patch.object(sys, "argv", [
                 "dispatch.py", "--enabled-dir", str(self.base / "extensions/enabled"),
-                "--services-file", str(self.base / "services.json"), "--cache-dir", str(self.base / "cache"),
+                "--services-file", str(self.base / "CITADEL_DATA/services.json"), "--cache-dir", str(self.base / "cache"),
                 "--config-ini", str(self.base / "config.ini"),
-                "--state-file", str(self.base / "extensions/providers_state.json"),
+                "--state-file", str(self.base / "CITADEL_DATA/providers_state.json"),
                 "--tailscale-file", str(self.base / "tailscale.json"), "--provider", "cloudflare", "--strict",
               ]), patch.object(dispatch.subprocess, "run") as run):
             self.assertEqual(dispatch.main(), 0)
@@ -559,7 +563,7 @@ class CloudflareActivationTests(unittest.TestCase):
                          [{"service": "http_status:404"}])
 
     def test_invalid_whitelist_still_prevents_resource_mutations(self):
-        self.write("ports.filter.json", {"cloudflare": {"8000": {"whitelist": True, "emails": []}}})
+        self.write("CITADEL_DATA/ports.filter.json", {"cloudflare": {"8000": {"whitelist": True, "emails": []}}})
         code, payload = self.run_provider()
         self.assertEqual(code, 1)
         self.assertTrue(payload["considered"])
@@ -575,7 +579,7 @@ class CloudflareActivationTests(unittest.TestCase):
         self.api.access_policies.return_value = [{"id": "remote-policy",
             "name": f"CITADEL email whitelist {hostname}"}]
         self.api.access_identity_providers.return_value = [{"type": "onetimepin"}]
-        self.write("ports.filter.json", {"cloudflare": {"8000": {
+        self.write("CITADEL_DATA/ports.filter.json", {"cloudflare": {"8000": {
             "whitelist": True, "emails": ["user@example.net"]}}})
         for contents in ("not JSON", '{"dns_records":{"unrelated":"never-delete"}}'):
             (self.provider_dir / "routes.json").write_text(contents)
@@ -597,7 +601,7 @@ class CloudflareActivationTests(unittest.TestCase):
             self.assertEqual(calls[-1], "update_tunnel_configuration")
 
     def test_empty_scan_clears_the_configured_tunnel_without_a_routes_file(self):
-        self.write("services.json", {"http_services": []})
+        self.write("CITADEL_DATA/services.json", {"http_services": []})
         self.api.tunnel_configuration.return_value = {"ingress": [
             {"hostname": "old.example.net", "service": "http://127.0.0.1:5000"},
             {"service": "http_status:404"}], "warp-routing": {"enabled": False}}
@@ -666,7 +670,7 @@ class CloudflareActivationTests(unittest.TestCase):
         for scan in ({}, {"http_services": None}, {"http_services": "broken"},
                      {"http_services": [{"port": 0, "scheme": "http"}]}):
             with self.subTest(scan=scan):
-                self.write("services.json", scan)
+                self.write("CITADEL_DATA/services.json", scan)
                 code, payload = self.run_provider()
                 self.assertEqual(code, 1)
                 self.assertTrue(payload["errors"])
@@ -776,8 +780,9 @@ class CloudflareCoreTests(unittest.TestCase):
     def test_batch_save_is_atomic_and_validated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            services = base / "services.json"
-            policy = base / "ports.filter.json"
+            (base / "CITADEL_DATA").mkdir()
+            services = base / "CITADEL_DATA/services.json"
+            policy = base / "CITADEL_DATA/ports.filter.json"
             services.write_text(
                 json.dumps(
                     {

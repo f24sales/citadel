@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "providers"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import now_iso, write_json
 from webui_transport import caddy_directory
+from runtime_state import data_directory
 
 
 def read_object(path: Path) -> dict:
@@ -134,7 +135,7 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
         steps_text = steps_raw.strip()
         remember = steps_text.lower() not in ("", "blank")
         steps = port_number(steps_text if remember else "1", "CADDYFILE_STEPS")
-        config_path = provider_dir / "config.json"
+        config_path = data_directory(root) / "caddy-config.json"
         config = read_object(config_path if config_path.exists() else provider_dir / "config.json.example")
         backend = host_name(config.get("backend", "127.0.0.1"))
         tls_server_name = host_name(config["tls_server_name"]) if config.get("tls_server_name") else ""
@@ -142,7 +143,7 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
         if not isinstance(raw_hosts, list) or not raw_hosts:
             raise ValueError("Caddy hosts must be a nonempty list")
         hosts = list(dict.fromkeys(host_name(host) for host in raw_hosts))
-        scanned = read_object(services_file or root / "services.json").get("http_services")
+        scanned = read_object(services_file or data_directory(root) / "services.json").get("http_services")
         if not isinstance(scanned, list):
             raise ValueError("services.json must contain an http_services list")
         services = []
@@ -178,7 +179,7 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
             # Only our allocation ledger; never delete the mounted directory.
             allocation_file.unlink(missing_ok=True)
         payload.update(available=True, generated_file=str(destination), mappings_count=len(services),
-                       artifacts=[{"path": "CADDY/Caddyfile", "sha256": hashlib.sha256(content.encode()).hexdigest()}])
+                       artifacts=[{"path": "CITADEL_DATA/CADDY/Caddyfile", "sha256": hashlib.sha256(content.encode()).hexdigest()}])
     except (OSError, ValueError, TypeError) as exc:
         payload["errors"].append(str(exc))
     return payload
@@ -191,7 +192,7 @@ def main() -> int:
     for name in ("cache-dir", "config-ini", "tailscale-file"):
         parser.add_argument(f"--{name}")
     args = parser.parse_args()
-    root = Path(args.services_file).resolve().parent
+    root = Path(args.provider_dir).resolve().parents[2]
     sys.path.insert(0, str(root))
     header = importlib.import_module("python_header")
     payload = export(root, Path(args.provider_dir), header.get("CADDYFILE_START", ""),

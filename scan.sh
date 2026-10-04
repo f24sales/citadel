@@ -41,19 +41,19 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE_DIR="$SCRIPT_DIR/cache"
-ICONS_DIR="$SCRIPT_DIR/icons"
+DATA_DIR="$SCRIPT_DIR/CITADEL_DATA"
+ICONS_DIR="$DATA_DIR/icons"
 FUNCTIONS_DIR="$SCRIPT_DIR/functions"
 PROVIDERS_DIR="$FUNCTIONS_DIR/providers"
 EXTENSIONS_DIR="$SCRIPT_DIR/extensions"
 ENABLED_EXT_DIR="$EXTENSIONS_DIR/enabled"
-PROVIDER_ROUTES_DIR="$SCRIPT_DIR/extensions/enabled"
 CONFIG="$SCRIPT_DIR/config.ini"
-SS_FILE="$SCRIPT_DIR/ss.json"
-SERVICES_FILE="$SCRIPT_DIR/services.json"
-TAILSCALE_FILE="$SCRIPT_DIR/tailscale.json"
-PORT_FILTER_FILE="$SCRIPT_DIR/ports.filter.json"
-PROVIDERS_STATE_FILE="$SCRIPT_DIR/extensions/providers_state.json"
-TIMESTAMP_FILE="$SCRIPT_DIR/last_scan.txt"
+SS_FILE="$DATA_DIR/ss.json"
+SERVICES_FILE="$DATA_DIR/services.json"
+TAILSCALE_FILE="$DATA_DIR/tailscale.json"
+PORT_FILTER_FILE="$DATA_DIR/ports.filter.json"
+PROVIDERS_STATE_FILE="$DATA_DIR/providers_state.json"
+TIMESTAMP_FILE="$DATA_DIR/last_scan.txt"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
 SCAN_LOCK_FILE="${CITADEL_SCAN_LOCK_FILE:-$RUNTIME_DIR/citadel-scan-${UID}.lock}"
 MAX_FETCH_BYTES=1048576
@@ -74,7 +74,7 @@ fi
 
 mkdir -p \
     "$CACHE_DIR" "$ICONS_DIR" "$FUNCTIONS_DIR" "$PROVIDERS_DIR" \
-    "$ENABLED_EXT_DIR" "$PROVIDER_ROUTES_DIR"
+    "$ENABLED_EXT_DIR"
 
 CA_CERT=""
 if [[ -f "$CONFIG" ]]; then
@@ -674,7 +674,6 @@ if [[ -f "$PROVIDERS_DIR/dispatch.py" ]]; then
             --cache-dir "$CACHE_DIR" \
             --config-ini "$CONFIG" \
             --state-file "$FILTERED_STATE_FILE" \
-            --routes-dir "$PROVIDER_ROUTES_DIR" \
             --tailscale-file "$TAILSCALE_FILE" \
             --provider "$PROVIDER_FILTER" \
             --strict
@@ -685,7 +684,6 @@ if [[ -f "$PROVIDERS_DIR/dispatch.py" ]]; then
             --cache-dir "$CACHE_DIR" \
             --config-ini "$CONFIG" \
             --state-file "$PROVIDERS_STATE_FILE" \
-            --routes-dir "$PROVIDER_ROUTES_DIR" \
             --tailscale-file "$TAILSCALE_FILE" \
             --strict
     fi

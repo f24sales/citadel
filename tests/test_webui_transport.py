@@ -47,7 +47,7 @@ class TransportSelectionTests(unittest.TestCase):
                 if value is not None:
                     environment["CITADEL_WEBUI_SOCKET"] = value
                 with self.subTest(runtime=runtime, value=value):
-                    target = Path(expected) / "citadel/citadel.sock" if value else ROOT / "CADDY/citadel.sock"
+                    target = Path(expected) / "citadel/citadel.sock" if value else ROOT / "CITADEL_DATA/CADDY/citadel.sock"
                     self.assertEqual(unix_socket_path(environment), target)
 
     def test_explicit_unix_does_not_depend_on_runtime_or_container(self):
@@ -68,7 +68,7 @@ class TransportSelectionTests(unittest.TestCase):
 
     def test_readiness_and_start_share_defaults(self):
         with patch.dict(os.environ, {"CITADEL_WEBUI_TRANSPORT": "unix"}, clear=True):
-            self.assertEqual(probe_target(), ["unix", str(ROOT / "CADDY/citadel.sock")])
+            self.assertEqual(probe_target(), ["unix", str(ROOT / "CITADEL_DATA/CADDY/citadel.sock")])
         with patch.dict(os.environ, {"FASTAPI_HOST": "::", "CITADEL_WEBUI_PORT": "12000"}, clear=True):
             with patch("webui_transport.socket.create_connection") as connect:
                 self.assertTrue(listener_ready())

@@ -16,7 +16,8 @@ class TailscaleDashboardTests(unittest.TestCase):
     def test_single_provider_keeps_https_urls_on_original_ports(self):
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
-            enabled = base / "enabled"
+            (base / "CITADEL_DATA").mkdir()
+            enabled = base / "extensions/enabled"
             provider = enabled / "tailscale"
             provider.mkdir(parents=True)
             (provider / "extension.json").write_text('{"label":"Tailscale"}')
@@ -27,7 +28,7 @@ class TailscaleDashboardTests(unittest.TestCase):
                 "4096": {"url": "https://node.example.ts.net:4096"},
             }
             for considered in (True, False):
-                (provider / "routes.json").write_text(json.dumps({
+                (base / "CITADEL_DATA/tailscale-routes.json").write_text(json.dumps({
                     "considered": considered, "available": considered,
                     "domain": "node.example.ts.net",
                     "services": services if considered else {},
@@ -44,10 +45,11 @@ class TailscaleDashboardTests(unittest.TestCase):
     def test_failed_https_route_is_not_advertised(self):
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
-            provider = base / "enabled" / "tailscale"
+            (base / "CITADEL_DATA").mkdir()
+            provider = base / "extensions/enabled" / "tailscale"
             provider.mkdir(parents=True)
             (provider / "extension.json").write_text('{"label":"Tailscale"}')
-            (provider / "routes.json").write_text(json.dumps({
+            (base / "CITADEL_DATA/tailscale-routes.json").write_text(json.dumps({
                 "considered": True, "available": False,
                 "domain": "node.example.ts.net", "services": {},
                 "errors": ["port 9090: HTTPS Serve configuration was not confirmed"],

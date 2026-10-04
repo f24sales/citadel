@@ -54,7 +54,7 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertIn(str(self.root / "citadel.service"), result.stdout)
         self.assertIn(str(self.root / "citadel.container"), result.stdout)
         self.assertEqual(result.stdout.count("ln -s"), 2)
-        self.assertTrue((self.root / "CADDY").is_dir())
+        self.assertTrue((self.root / "CITADEL_DATA/CADDY").is_dir())
         self.assertNotIn("Recommended bind mount", result.stdout)
 
     def test_caddy_hint_when_either_or_both_features_are_selected(self):
@@ -68,7 +68,7 @@ class SetupContainerfileTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual("Recommended bind mount" in result.stdout, enabled, result.stderr)
                 if enabled:
-                    self.assertIn(f"Volume={self.root}/CADDY:/CADDY:ro,z", result.stdout)
+                    self.assertIn(f"Volume={self.root}/CITADEL_DATA/CADDY:/CADDY:ro,z", result.stdout)
                     self.assertIn("unix//CADDY/citadel.sock", result.stdout)
                     self.assertIn("import /CADDY/Caddyfile", result.stdout)
 
@@ -88,7 +88,7 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertIn(str(self.root / "citadel.service"), result.stdout)
         self.assertIn(str(self.root / "citadel.container"), result.stdout)
         self.assertTrue((self.root / "config.sh.called").exists())
-        self.assertFalse((self.root.parent / "CADDY").exists())
+        self.assertFalse((self.root.parent / "CITADEL_DATA/CADDY").exists())
 
     def test_recipe_copies_no_runtime_state_or_credentials(self):
         recipe = (ROOT / ".github/scripts/Containerfile").read_text()
@@ -129,7 +129,7 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertNotIn("cloudflare", quadlet.lower())
         self.assertIn("pull_policy: never", (self.root / "docker-compose.yml").read_text())
         self.assertNotIn("Volume=z", quadlet)
-        self.assertIn(f"Volume={self.root}/CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z", quadlet)
+        self.assertIn(f"Volume={self.root}/CITADEL_DATA:/opt/safrano9999/CITADEL/CITADEL_DATA:z", quadlet)
         self.assertEqual(sum(line.startswith("Volume=") for line in quadlet.splitlines()), 1)
         self.assertIn("#Volume=citadel-tailscale:/opt/safrano9999/CITADEL/CITADEL_TAILSCALE:Z", quadlet)
         self.assertIn("EnvironmentFile=" + str(self.root / "config.conf"), quadlet)

@@ -6,12 +6,13 @@ import os
 from pathlib import Path
 import socket
 import stat
+from runtime_state import data_directory
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 def caddy_directory(root: Path = PROJECT_DIR) -> Path:
-    return root / "CADDY"
+    return data_directory(root) / "CADDY"
 
 
 def tcp_address() -> tuple[str, int]:

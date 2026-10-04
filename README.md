@@ -112,7 +112,7 @@ The installer also attempts to enable user lingering when it is available.
 `CITADEL_WEBUI_TRANSPORT=tcp` is the default, including an unset or empty
 value. Explicitly select `unix` to serve the same WebUI over a Unix socket,
 on either the host or inside a container. `CITADEL_WEBUI_SOCKET` selects its
-absolute path; empty uses the repository's `CADDY/citadel.sock` on the host
+absolute path; empty uses the repository's `CITADEL_DATA/CADDY/citadel.sock` on the host
 and in the image. An explicit `%t/` path uses `XDG_RUNTIME_DIR`. The web server creates
 the socket; Podman can share its directory using a bind mount. A browser still
 needs a TCP/HTTP(S) proxy in front of a socket-only WebUI.
@@ -176,20 +176,19 @@ the corresponding clients and providers. Runtime secrets are injected, never
 baked into the image. A separate named volume retains Tailscale state at
 `/opt/safrano9999/CITADEL/CITADEL_TAILSCALE` in Alpine and Fedora/uCore from
 the Citadel/base layer onward. By default,
-one bind mount, `./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z`, shares all Citadel data with the host
+one bind mount, `./CITADEL_DATA:/opt/safrano9999/CITADEL/CITADEL_DATA:z`, shares all Citadel data with the host
 service: policy, scan/provider state, logos, Caddy configuration and its
-generated files/socket. Setup moves these into `CITADEL/` and links the
-application paths there, without overwriting any
-conflicting data. Both Alpine and Fedora/uCore use `CITADEL_DATA/` inside the
-Citadel repository, with the same layout helper; application code is never
+generated files/socket. Both the host and Alpine/Fedora/uCore read and write
+`CITADEL_DATA/` directly inside the Citadel repository: no alias directories,
+file symlinks or migration fallbacks. Setup creates the directories; application code is never
 covered by the mount. Named volumes remain
 possible by changing `container.conf`, but are then separate from host state.
 Cloudflare has no volume and no persistent ID ledger. Its `routes.json` is
 disposable dashboard output and is excluded from the shared state mount.
 A missing filter file is not required for WebUI startup; the scan creates an
 empty policy. The shared `CADDY` directory holds the generated Caddyfile,
-allocation ledger and optional `citadel.sock`. The repository's `CADDY` path
-links into this shared state; mount only that subdirectory at `/CADDY` in
+allocation ledger and optional `citadel.sock`. Mount `CITADEL_DATA/CADDY`
+directly at `/CADDY` in
 Caddy, not the private Citadel state. Caddy's `unix//CADDY/citadel.sock` upstream stays
 the same when switching between host service and container. TCP is the default.
 Conditional mounts remain visible as commented `#Volume=...` lines when inactive.
@@ -303,7 +302,7 @@ ca_cert = /path/to/certs/ca.pem
 
 ### Port policy
 
-`ports.filter.json` is created during the first scan. Start from
+`CITADEL_DATA/ports.filter.json` is created during the first scan. Start from
 `ports.filter.json.example` when a policy should be prepared in advance:
 
 ```json
@@ -331,13 +330,13 @@ Existing mounts are not removed by changing a runtime flag.
 Useful state paths to retain across container recreation include:
 
 ```text
-ports.filter.json
-extensions/enabled/cloudflare/routes.json
-tailscale.json
+CITADEL_DATA/ports.filter.json
+CITADEL_DATA/icons/
+CITADEL_DATA/CADDY/
 ```
 
-CITADEL writes in its own directory or follows explicitly configured state
-symlinks into volumes. Provider code should not be hidden by a state mount.
+CITADEL writes directly into `CITADEL_DATA/`; no state symlinks are needed.
+Cloudflare output remains ephemeral in `cache/`. Provider code is not hidden by the mount.
 `CITADEL_LOGO_PERSISTENT=1` reuses downloaded icons between scans. With `0`,
 HTML services get a fresh download attempt; successful downloads replace that
 port's icon, failed downloads leave the previous icon available. The icon
@@ -369,12 +368,12 @@ CADDYFILE_STEPS=1
 
 An unset, empty, or zero start disables generation; no output directory is
 created. Empty steps use 1. The extension reads the current service scan and
-writes `CADDY/Caddyfile`, independently of the WebUI's `tcp`/`unix`
+writes `CITADEL_DATA/CADDY/Caddyfile`, independently of the WebUI's `tcp`/`unix`
 transport. It never starts/reloads Caddy, changes Quadlets, opens ports, calls
 Podman, or issues certificates. No running Caddy is required for generation.
 
 Configure the addresses visible **from Caddy** in
-`extensions/enabled/caddy/config.json`, for example:
+`CITADEL_DATA/caddy-config.json`, for example:
 
 ```json
 {
@@ -399,7 +398,7 @@ or START=0 disables export without deleting existing artifacts.
 With empty/blank STEPS, every scan assigns currently discovered ports afresh in
 numeric order, incrementing by 1. The old allocation ledger is not read and is
 removed only after a new Caddyfile is successfully written.
-With explicit positive STEPS (including 1), `CADDY/ports.json` remembers
+With explicit positive STEPS (including 1), `CITADEL_DATA/CADDY/ports.json` remembers
 the numeric mapping: newly
 discovered ports append, disappeared ports keep their slots, and titles,
 icons, and process identities are not used to recognize services. Preserve
@@ -414,12 +413,12 @@ Optionally bind-mount the **directory**, not the individual generated file,
 read-only into Caddy, e.g. in its Quadlet:
 
 ```ini
-Volume=/absolute/host/path/citadel/CADDY:/CADDY:ro,z
+Volume=/absolute/host/path/citadel/CITADEL_DATA/CADDY:/CADDY:ro,z
 PublishPort=4000-4099:4000-4099
 ```
 
 The Citadel container already receives this directory through its single
-`./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z` bind mount. This also persists the mapping. The published
+`./CITADEL_DATA:/opt/safrano9999/CITADEL/CITADEL_DATA:z` bind mount. This also persists the mapping. The published
 range is an operator choice, not managed by Citadel; use nonoverlapping
 ranges for multiple exporters. Check Unix ownership and SELinux labels for
 the shared directory. Import `/CADDY/Caddyfile` in Caddy and validate
@@ -612,13 +611,15 @@ Run or repeat discovery:
 The scan updates:
 
 ```text
-ss.json
-services.json
+CITADEL_DATA/ss.json
+CITADEL_DATA/services.json
 cache/<port>.json
-extensions/providers_state.json
-extensions/enabled/<provider>/routes.json
-tailscale.json
-last_scan.txt
+CITADEL_DATA/providers_state.json
+CITADEL_DATA/<provider>-routes.json
+CITADEL_DATA/caddy-status.json
+cache/cloudflare-routes.json
+CITADEL_DATA/tailscale.json
+CITADEL_DATA/last_scan.txt
 ```
 
 The dashboard does not execute scans. Cloudflare edits made in the dashboard
@@ -682,9 +683,8 @@ The endpoint defaults to showing all enabled extensions; its `extensions`
 parameter restricts the selection. The CLI requires an explicit selection.
 
 For file exporters, health verifies that generated artifacts exist under the
-Citadel directory and match the last successful export's SHA-256. The Caddy
-export also permits `CADDY/` itself to link to a shared output directory;
-the generated file must remain inside that directory. No dropdown
+Citadel directory and match the last successful export's SHA-256.
+The generated file lives directly in `CITADEL_DATA/CADDY/`. No dropdown
 URLs are required. This verifies the exported files, **not** whether an
 external Caddy has imported them, reloaded, or can reach its backends. The
 standalone checker does not turn file exporters into HTTP probe jobs.

@@ -11,7 +11,6 @@ USER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
 "$SCRIPT_DIR/config.sh"
 "$SCRIPT_DIR/set_daemon.sh" --render-only
 python3 -s "$SCRIPT_DIR/functions/runtime_state.py"
-mkdir -p "$SCRIPT_DIR/CADDY" "$SCRIPT_DIR/icons"
 
 printf '\nHost service (choose this OR the container):\n'
 printf '  mkdir -p %q && ln -s %q %q\n' \
@@ -33,7 +32,7 @@ print(int(get_int("CADDYFILE_START") > 0 or unix_socket_path() is not None))
 ')"
 if [[ "$caddy_selected" == 1 ]]; then
     printf '\nRecommended bind mount in your Caddy Quadlet:\n'
-    printf '  Volume=%s/CADDY:/CADDY:ro,z\n' "$SCRIPT_DIR"
+    printf '  Volume=%s/CITADEL_DATA/CADDY:/CADDY:ro,z\n' "$SCRIPT_DIR"
     printf '  Unix WebUI, if selected: reverse_proxy unix//CADDY/citadel.sock\n'
     printf '  Generated routes, if selected: import /CADDY/Caddyfile\n'
     printf 'Keep this mount unchanged when switching between service and container.\n'

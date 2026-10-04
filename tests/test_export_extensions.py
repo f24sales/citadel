@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,9 +34,9 @@ class ExportFixture(unittest.TestCase):
         self.base = Path(temporary.name)
         self.enabled = self.base / "extensions/enabled"
         self.enabled.mkdir(parents=True)
-        self.write("services.json", {"http_services": []})
-        self.write("extensions/providers_state.json", {"providers": {"caddy": {"status": "ok", "kind": "export"}}})
-        (self.base / "last_scan.txt").write_text("2026-10-02T12:00:00Z")
+        self.write("CITADEL_DATA/services.json", {"http_services": []})
+        self.write("CITADEL_DATA/providers_state.json", {"providers": {"caddy": {"status": "ok", "kind": "export"}}})
+        (self.base / "CITADEL_DATA/last_scan.txt").write_text("2026-10-02T12:00:00Z")
         for target in ("subprocess.run", "urllib.request.urlopen"):
             guard = patch(target, side_effect=AssertionError("Live processes/network forbidden"))
             guard.start()
@@ -56,10 +57,10 @@ class ExportFixture(unittest.TestCase):
         self.manifest()
         artifacts = []
         if configured:
-            artifact = self.base / "CADDY/Caddyfile"
-            artifact.parent.mkdir(exist_ok=True)
+            artifact = self.base / "CITADEL_DATA/CADDY/Caddyfile"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_bytes(content)
-            artifacts = [{"path": "CADDY/Caddyfile", "sha256": hashlib.sha256(content).hexdigest()}]
+            artifacts = [{"path": "CITADEL_DATA/CADDY/Caddyfile", "sha256": hashlib.sha256(content).hexdigest()}]
         status = {
             "provider_id": "caddy", "label": "Caddy", "kind": "export",
             "considered": configured, "available": configured,
@@ -67,22 +68,22 @@ class ExportFixture(unittest.TestCase):
             "artifacts": artifacts,
         }
         if configured:
-            status.update(generated_file="CADDY/Caddyfile", mappings_count=1)
+            status.update(generated_file="CITADEL_DATA/CADDY/Caddyfile", mappings_count=1)
         status.update(overrides)
-        self.write("extensions/enabled/caddy/status.json", status)
+        self.write("CITADEL_DATA/caddy-status.json", status)
         return status
 
     def provider(self):
         self.write("extensions/enabled/localhost/extension.json", {"provider": "localhost", "label": "Localhost"})
-        self.write("extensions/enabled/localhost/routes.json", {
+        self.write("CITADEL_DATA/localhost-routes.json", {
             "considered": True, "available": True, "errors": [],
             "services": {"8000": {"url": "http://localhost:8000"}},
         })
-        self.write("services.json", {"http_services": [{
+        self.write("CITADEL_DATA/services.json", {"http_services": [{
             "port": 8000, "name": "Example", "urls": {"localhost": "http://localhost:8000"},
         }]})
         self.write("cache/8000.json", {"kind": "html"})
-        self.write("extensions/providers_state.json", {
+        self.write("CITADEL_DATA/providers_state.json", {
             "providers": {"caddy": {"status": "ok", "kind": "export"}, "localhost": {"status": "ok"}},
             "considered_providers": ["localhost"], "available_providers": ["localhost"],
         })
@@ -99,24 +100,23 @@ class ExportDispatchTests(ExportFixture):
             "provider_id": "caddy", "label": "Caddy", "kind": "export",
             "considered": True, "available": True, "services": {}, "errors": [],
             "generated_at": "2026-10-02T12:00:00Z", "mappings_count": 0,
-            "generated_file": "CADDY/Caddyfile",
-            "artifacts": [{"path": "CADDY/Caddyfile", "sha256": hashlib.sha256(b"").hexdigest()}],
+            "generated_file": "CITADEL_DATA/CADDY/Caddyfile",
+            "artifacts": [{"path": "CITADEL_DATA/CADDY/Caddyfile", "sha256": hashlib.sha256(b"").hexdigest()}],
         }
 
     def run_dispatch(self, *extra, returncode=0, payload=None):
         arguments = [
             "dispatch.py", "--enabled-dir", str(self.enabled),
-            "--services-file", str(self.base / "services.json"),
+            "--services-file", str(self.base / "CITADEL_DATA/services.json"),
             "--cache-dir", str(self.base / "cache"),
             "--config-ini", str(self.base / "config.ini"),
-            "--state-file", str(self.base / "extensions/providers_state.json"),
+            "--state-file", str(self.base / "CITADEL_DATA/providers_state.json"),
             "--tailscale-file", str(self.base / "tailscale.json"), *extra,
         ]
 
         def fake_run(command, **kwargs):
             output = Path(command[command.index("--routes-out") + 1])
-            # Exercise the same atomic writer as the real providers, including
-            # following persistent file links without replacing the symlink.
+            # Exercise the same direct atomic writer as the real providers.
             dispatch.write_json(str(output), self.status if payload is None else payload)
             return subprocess.CompletedProcess(command, returncode, "", "export failed" if returncode else "")
 
@@ -127,7 +127,7 @@ class ExportDispatchTests(ExportFixture):
             redirect_stdout(io.StringIO()),
         ):
             code = dispatch.main()
-        state = json.loads((self.base / "extensions/providers_state.json").read_text())
+        state = json.loads((self.base / "CITADEL_DATA/providers_state.json").read_text())
         return code, state, run
 
     def test_export_script_status_path_and_provider_metadata(self):
@@ -136,11 +136,11 @@ class ExportDispatchTests(ExportFixture):
         command = run.call_args.args[0]
         self.assertEqual(Path(command[1]), self.stub)
         self.assertEqual(Path(command[command.index("--provider-dir") + 1]), self.enabled / "caddy")
-        self.assertEqual(Path(command[command.index("--routes-out") + 1]), self.enabled / "caddy/status.json")
-        for flag, path in (("--services-file", "services.json"), ("--cache-dir", "cache"),
+        self.assertEqual(Path(command[command.index("--routes-out") + 1]), self.base / "CITADEL_DATA/caddy-status.json")
+        for flag, path in (("--services-file", "CITADEL_DATA/services.json"), ("--cache-dir", "cache"),
                            ("--config-ini", "config.ini"), ("--tailscale-file", "tailscale.json")):
             self.assertEqual(Path(command[command.index(flag) + 1]), self.base / path)
-        self.assertFalse((self.enabled / "caddy/routes.json").exists())
+        self.assertFalse((self.base / "CITADEL_DATA/caddy-routes.json").exists())
         for key in ("enabled", "considered", "available"):
             self.assertEqual(state[f"{key}_providers"], [])
             self.assertEqual(state[f"{key}_exports"], ["caddy"])
@@ -152,8 +152,8 @@ class ExportDispatchTests(ExportFixture):
         code, _, run = self.run_dispatch("--routes-dir", str(runtime), "--strict")
         self.assertEqual(code, 0)
         command = run.call_args.args[0]
-        self.assertEqual(Path(command[command.index("--routes-out") + 1]), runtime / "caddy/status.json")
-        self.assertFalse((self.enabled / "caddy/status.json").exists())
+        self.assertEqual(Path(command[command.index("--routes-out") + 1]), runtime / "caddy-status.json")
+        self.assertFalse((self.base / "CITADEL_DATA/caddy-status.json").exists())
 
     def test_missing_kind_still_dispatches_url_provider(self):
         self.write("extensions/enabled/caddy/extension.json", {"provider": "localhost"})
@@ -168,7 +168,7 @@ class ExportDispatchTests(ExportFixture):
         self.assertEqual(Path(run.call_args.args[0][1]), script)
         self.assertEqual(state["available_providers"], ["caddy"])
         self.assertEqual(state["available_exports"], [])
-        self.assertTrue((self.enabled / "caddy/routes.json").exists())
+        self.assertTrue((self.base / "CITADEL_DATA/caddy-routes.json").exists())
 
     def test_strict_propagates_exit_and_status_errors(self):
         for returncode, errors in ((1, []), (0, ["invalid mapping"])):
@@ -186,7 +186,7 @@ class ExportDispatchTests(ExportFixture):
         self.assertEqual(code, 0)
         self.assertEqual(state["considered_exports"], [])
         self.assertEqual(state["available_providers"], [])
-        self.assertFalse((self.base / "CADDY/Caddyfile").exists())
+        self.assertFalse((self.base / "CITADEL_DATA/CADDY/Caddyfile").exists())
 
     def test_disabled_export_is_not_executed(self):
         self.manifest(enabled=False)
@@ -226,7 +226,7 @@ class ExportDispatchTests(ExportFixture):
 
     def test_output_symlink_cannot_escape_runtime_directory(self):
         outside = self.write("outside.json", {"untouched": True})
-        (self.enabled / "caddy/status.json").symlink_to(outside)
+        (self.base / "CITADEL_DATA/caddy-status.json").symlink_to(outside)
         code, _, run = self.run_dispatch("--strict")
         self.assertEqual(code, 1)
         run.assert_not_called()
@@ -242,84 +242,21 @@ class ExportDispatchTests(ExportFixture):
             "services": {"8000": {"url": "https://app.example.invalid"}},
         }
 
-    def named_volume_routes(self, volume):
-        root = Path(volume) / "named_volumes/CITADEL/extensions/enabled"
-        return root / "cloudflare/routes.json"
-
-    def test_provider_routes_link_also_supports_absolute_runtime_file(self):
+    def test_provider_writes_direct_ephemeral_cloudflare_file(self):
         payload = self.cloudflare_provider()
-        target = self.write("persistent/routes.json", {"old": True})
-        output = self.enabled / "cloudflare/routes.json"
-        output.symlink_to(target)
-        code, _, _ = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
+        code, _, run = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
         self.assertEqual(code, 0)
-        self.assertTrue(output.is_symlink())
-        self.assertEqual(json.loads(target.read_text()), payload)
+        output = self.base / "cache/cloudflare-routes.json"
+        self.assertEqual(json.loads(output.read_text()), payload)
+        self.assertFalse(output.is_symlink())
+        self.assertFalse((self.base / "CITADEL_DATA/cloudflare-routes.json").exists())
 
-    def test_provider_routes_file_link_supports_named_volume_and_atomic_updates(self):
+    def test_provider_file_symlinks_are_rejected(self):
         payload = self.cloudflare_provider()
-        output = self.enabled / "cloudflare/routes.json"
-        with tempfile.TemporaryDirectory() as volume:
-            target = self.named_volume_routes(volume)
-            target.parent.mkdir(parents=True)
-            target.write_text('{"old":true}')
-            target.chmod(0o640)
-            output.symlink_to(target)
-            code, state, run = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
-            self.assertEqual(code, 0)
-            self.assertEqual(state["available_providers"], ["cloudflare"])
-            self.assertEqual(Path(run.call_args.args[0][run.call_args.args[0].index("--routes-out") + 1]), output)
-            self.assertTrue(output.is_symlink())
-            self.assertEqual(output.readlink(), target)
-            self.assertEqual(json.loads(target.read_text()), payload)
-            self.assertEqual(target.stat().st_mode & 0o777, 0o640)
-            self.assertEqual(list(target.parent.iterdir()), [target])
-
-    def test_provider_routes_link_creates_missing_persistent_target(self):
-        payload = self.cloudflare_provider()
-        output = self.enabled / "cloudflare/routes.json"
-        with tempfile.TemporaryDirectory() as volume:
-            target = self.named_volume_routes(volume)
-            output.symlink_to(target)
-            code, _, _ = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
-            self.assertEqual(code, 0)
-            self.assertTrue(output.is_symlink())
-            self.assertEqual(json.loads(target.read_text()), payload)
-
-    def test_separate_runtime_directory_supports_provider_routes_file_link(self):
-        payload = self.cloudflare_provider()
-        runtime = self.base / "runtime"
-        (runtime / "cloudflare").mkdir(parents=True)
-        output = runtime / "cloudflare/routes.json"
-        with tempfile.TemporaryDirectory() as volume:
-            target = self.named_volume_routes(volume)
-            output.symlink_to(target)
-            code, _, _ = self.run_dispatch("--provider", "cloudflare", "--routes-dir", str(runtime),
-                                           "--strict", payload=payload)
-            self.assertEqual(code, 0)
-            self.assertTrue(output.is_symlink())
-            self.assertEqual(json.loads(target.read_text()), payload)
-
-    def test_provider_output_directory_cannot_escape_even_if_file_link_points_back(self):
-        payload = self.cloudflare_provider()
-        runtime = self.base / "runtime"
-        runtime.mkdir()
-        with tempfile.TemporaryDirectory() as outside:
-            (runtime / "cloudflare").symlink_to(outside, target_is_directory=True)
-            target = runtime / "inside.json"
-            target.write_text('{"untouched":true}')
-            (Path(outside) / "routes.json").symlink_to(target)
-            code, _, run = self.run_dispatch("--provider", "cloudflare", "--routes-dir", str(runtime),
-                                             "--strict", payload=payload)
-            self.assertEqual(code, 1)
-            run.assert_not_called()
-            self.assertEqual(json.loads(target.read_text()), {"untouched": True})
-
-    def test_provider_file_link_rejects_relative_traversal_or_directory_target(self):
-        payload = self.cloudflare_provider()
-        output = self.enabled / "cloudflare/routes.json"
+        output = self.base / "cache/cloudflare-routes.json"
+        output.parent.mkdir(exist_ok=True)
         target = self.write("outside.json", {"untouched": True})
-        for link in ("../../../outside.json", str(self.base / "extensions/../outside.json"), str(self.base)):
+        for link in (str(target), "../outside.json", str(self.base)):
             with self.subTest(link=link):
                 output.symlink_to(link)
                 code, _, run = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
@@ -348,23 +285,19 @@ class ExportDispatchTests(ExportFixture):
         self.assertEqual(code, 1)
         run.assert_not_called()
 
-    def test_cloudflare_health_reads_persisted_routes_without_mutation(self):
+    def test_cloudflare_health_reads_ephemeral_output_without_mutation(self):
         payload = self.cloudflare_provider()
-        self.write("services.json", {"http_services": [{
+        self.write("CITADEL_DATA/services.json", {"http_services": [{
             "port": 8000, "name": "Example", "urls": {"cloudflare": "https://app.example.invalid"},
         }]})
         self.write("cache/8000.json", {"kind": "html"})
-        output = self.enabled / "cloudflare/routes.json"
-        with tempfile.TemporaryDirectory() as volume:
-            target = self.named_volume_routes(volume)
-            output.symlink_to(target)
-            code, _, _ = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
-            self.assertEqual(code, 0)
-            before = (target.read_bytes(), target.stat().st_mtime_ns, output.readlink())
-            result = health.snapshot(self.base, ["cloudflare"])
-            self.assertEqual(result["status"], "PASS")
-            self.assertEqual(result["extensions"][0]["services"][0]["url"], "https://app.example.invalid")
-            self.assertEqual(before, (target.read_bytes(), target.stat().st_mtime_ns, output.readlink()))
+        code, _, _ = self.run_dispatch("--provider", "cloudflare", "--strict", payload=payload)
+        self.assertEqual(code, 0)
+        output = self.base / "cache/cloudflare-routes.json"
+        before = (output.read_bytes(), output.stat().st_mtime_ns)
+        result = health.snapshot(self.base, ["cloudflare"])
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(before, (output.read_bytes(), output.stat().st_mtime_ns))
 
     def test_malformed_export_output_fails_strict_dispatch(self):
         for payload in ({}, [], {**self.status, "kind": "provider"},
@@ -378,9 +311,9 @@ class ExportDispatchTests(ExportFixture):
 class ExportDashboardTests(ExportFixture):
     def dashboard(self):
         with patch.multiple(core, BASE_DIR=self.base, ENABLED_EXT_DIR=self.enabled,
-                            PROVIDERS_STATE_FILE=self.base / "extensions/providers_state.json",
-                            SERVICES_FILE=self.base / "services.json", LAST_SCAN_FILE=self.base / "last_scan.txt",
-                            UI_CONFIG_FILE=self.base / "extensions/ui.json", PORT_FILTER_FILE=self.base / "ports.filter.json"):
+                            PROVIDERS_STATE_FILE=self.base / "CITADEL_DATA/providers_state.json",
+                            SERVICES_FILE=self.base / "CITADEL_DATA/services.json", LAST_SCAN_FILE=self.base / "CITADEL_DATA/last_scan.txt",
+                            UI_CONFIG_FILE=self.base / "extensions/ui.json", PORT_FILTER_FILE=self.base / "CITADEL_DATA/ports.filter.json"):
             return core.build_dashboard(), core._load_providers()
 
     def test_successful_exports_never_enter_dropdown_headers_or_urls(self):
@@ -393,7 +326,7 @@ class ExportDashboardTests(ExportFixture):
                 "label": "Old export route", "considered": True, "available": True,
                 "domain": "export.invalid", "services": {"8000": {"url": "https://export.invalid"}},
             })
-        self.write("extensions/providers_state.json", {
+        self.write("CITADEL_DATA/providers_state.json", {
             "considered_providers": ["localhost", "caddy", "tailscale", "cloudflare"],
             "available_providers": ["localhost", "caddy", "tailscale", "cloudflare"],
         })
@@ -409,7 +342,7 @@ class ExportDashboardTests(ExportFixture):
 
     def test_export_errors_remain_visible_without_url_options(self):
         self.export(configured=False, errors=["invalid hostname"])
-        self.write("extensions/providers_state.json", {"errors": ["Caddy process failed"]})
+        self.write("CITADEL_DATA/providers_state.json", {"errors": ["Caddy process failed"]})
         dashboard, _ = self.dashboard()
         self.assertEqual(dashboard["provider_options"], {})
         self.assertIn("[caddy] invalid hostname", dashboard["alerts"])
@@ -446,7 +379,7 @@ class ExportHealthTests(ExportFixture):
         entry = self.result()["extensions"][0]
         self.assertEqual(entry["status"], "SKIP")
         self.assertEqual(entry["artifacts"], [])
-        self.assertFalse((self.base / "CADDY/Caddyfile").exists())
+        self.assertFalse((self.base / "CITADEL_DATA/CADDY/Caddyfile").exists())
 
     def test_disabled_or_absent_export_skips_without_status_file(self):
         self.manifest(enabled=False)
@@ -457,26 +390,26 @@ class ExportHealthTests(ExportFixture):
         self.export(configured=False, errors=["invalid configuration"])
         self.assertEqual(self.result()["extensions"][0]["status"], "FAIL")
         self.export(configured=False)
-        self.write("extensions/providers_state.json", {"providers": {"caddy": {"status": "error"}}})
+        self.write("CITADEL_DATA/providers_state.json", {"providers": {"caddy": {"status": "error"}}})
         self.assertEqual(self.result()["extensions"][0]["status"], "FAIL")
 
     def test_hash_mismatch_fails(self):
         self.export()
-        (self.base / "CADDY/Caddyfile").write_text("changed")
+        (self.base / "CITADEL_DATA/CADDY/Caddyfile").write_text("changed")
         result = self.result()
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("mismatch", result["extensions"][0]["artifacts"][0]["detail"])
 
     def test_missing_or_directory_artifact_fails(self):
         self.export()
-        artifact = self.base / "CADDY/Caddyfile"
+        artifact = self.base / "CITADEL_DATA/CADDY/Caddyfile"
         artifact.unlink()
         self.assertEqual(self.result()["status"], "FAIL")
         artifact.mkdir()
         self.assertEqual(self.result()["status"], "FAIL")
 
     def test_artifact_path_traversal_and_absolute_paths_fail(self):
-        for path in ("../Caddyfile", "CADDY/../CADDY/Caddyfile", str(self.base / "CADDY/Caddyfile"),
+        for path in ("../Caddyfile", "CITADEL_DATA/CADDY/../CADDY/Caddyfile", str(self.base / "CITADEL_DATA/CADDY/Caddyfile"),
                      "..\\Caddyfile", "", "bad\x00path"):
             with self.subTest(path=path):
                 self.export(artifacts=[{"path": path, "sha256": hashlib.sha256(b"").hexdigest()}])
@@ -487,21 +420,22 @@ class ExportHealthTests(ExportFixture):
         with tempfile.TemporaryDirectory() as outside:
             target = Path(outside) / "Caddyfile"
             target.write_bytes(b"")
-            artifact = self.base / "CADDY/Caddyfile"
+            artifact = self.base / "CITADEL_DATA/CADDY/Caddyfile"
             artifact.unlink()
             artifact.symlink_to(target)
             result = self.result()
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("escapes", result["extensions"][0]["artifacts"][0]["detail"])
 
-    def test_caddy_output_directory_can_be_shared_through_a_link(self):
+    def test_caddy_output_directory_cannot_escape_through_a_link(self):
         self.export()
         with tempfile.TemporaryDirectory() as shared:
-            original = self.base / "CADDY"
-            target = Path(shared) / "CADDY"
+            original = self.base / "CITADEL_DATA/CADDY"
+            target = Path(shared) / "CITADEL_DATA/CADDY"
+            target.parent.mkdir()
             original.rename(target)
             original.symlink_to(target, target_is_directory=True)
-            self.assertEqual(self.result()["status"], "PASS")
+            self.assertEqual(self.result()["status"], "FAIL")
             outside = Path(shared) / "unrelated"
             outside.write_text("not exported")
             (target / "Caddyfile").unlink()
@@ -509,7 +443,7 @@ class ExportHealthTests(ExportFixture):
             self.assertEqual(self.result()["status"], "FAIL")
 
     def test_invalid_or_empty_artifact_metadata_fails(self):
-        for artifacts in ([], None, {}, [None], [{}], [{"path": "CADDY/Caddyfile", "sha256": "bad"}]):
+        for artifacts in ([], None, {}, [None], [{}], [{"path": "CITADEL_DATA/CADDY/Caddyfile", "sha256": "bad"}]):
             with self.subTest(artifacts=artifacts):
                 self.export(artifacts=artifacts)
                 self.assertEqual(self.result()["status"], "FAIL")
@@ -517,15 +451,15 @@ class ExportHealthTests(ExportFixture):
     def test_all_artifacts_must_pass(self):
         status = self.export()
         status["artifacts"].append({"path": "missing.txt", "sha256": hashlib.sha256(b"").hexdigest()})
-        self.write("extensions/enabled/caddy/status.json", status)
+        self.write("CITADEL_DATA/caddy-status.json", status)
         result = self.result()
         self.assertEqual(result["status"], "FAIL")
         self.assertEqual([a["status"] for a in result["extensions"][0]["artifacts"]], ["PASS", "FAIL"])
 
     def test_routes_file_cannot_substitute_for_export_status(self):
         status = self.export()
-        (self.enabled / "caddy/status.json").unlink()
-        self.write("extensions/enabled/caddy/routes.json", status)
+        (self.base / "CITADEL_DATA/caddy-status.json").unlink()
+        self.write("CITADEL_DATA/caddy-routes.json", status)
         self.assertEqual(self.result()["status"], "FAIL")
 
     def test_invalid_status_or_unknown_kind_fails(self):

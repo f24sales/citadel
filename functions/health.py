@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from runtime_state import data_directory, provider_output
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -57,12 +58,7 @@ def check_artifacts(base: Path, artifacts: object, *, caddy_export: bool = False
             continue
         try:
             target = (root / path).resolve()
-            shared_caddy_file = (
-                caddy_export and path == "CADDY/Caddyfile"
-                and not (root / path).is_symlink()
-                and target.parent == (root / "CADDY").resolve()
-            )
-            if not target.is_relative_to(root) and not shared_caddy_file:
+            if not target.is_relative_to(root):
                 record["detail"] = "Artifact path escapes the repository"
                 continue
             if not target.is_file():
@@ -91,14 +87,14 @@ def snapshot(base: Path, selected: list[str] | None = None) -> dict:
               "generated_at": datetime.now(timezone.utc).isoformat(), "last_index_at": None,
               "errors": [], "extensions": []}
     try:
-        result["last_index_at"] = (base / "last_scan.txt").read_text().strip()
+        result["last_index_at"] = (data_directory(base) / "last_scan.txt").read_text().strip()
         if not result["last_index_at"]:
             raise ValueError("Missing index timestamp")
-        services = read_object(base / "services.json")["http_services"]
+        services = read_object(data_directory(base) / "services.json")["http_services"]
         if not isinstance(services, list):
             raise ValueError("Invalid services list")
         indexed = {str(int(s["port"])): s for s in services}
-        state = read_object(base / "extensions" / "providers_state.json")
+        state = read_object(data_directory(base) / "providers_state.json")
     except (OSError, ValueError, KeyError, TypeError):
         result["errors"].append("Index data missing or invalid")
         indexed, state = {}, {}
@@ -124,7 +120,7 @@ def snapshot(base: Path, selected: list[str] | None = None) -> dict:
             if result["errors"]:
                 entry.update(status="NOT_TESTED", detail="Index data unavailable")
                 continue
-            routes = read_object(directory / ("status.json" if kind == "export" else "routes.json"))
+            routes = read_object(provider_output(base, name, kind))
             provider = state.get("providers", {}).get(name, {})
             if provider.get("status") != "ok" or routes.get("errors"):
                 raise ValueError("Provider failed in the index")

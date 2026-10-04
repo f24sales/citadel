@@ -23,8 +23,8 @@ TAILSCALE_VOLUMES=${CONTAINER_NAME}-tailscale:/opt/safrano9999/CITADEL/CITADEL_T
 # One shared bind: policy, scan/provider state, logos, Caddy config/output/socket.
 # Application code stays in the image. Tailscale state remains separate.
 #volume-if: CITADEL_VOLUMES CITADEL_VOLUMES
-#default-preset: ./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z
-CITADEL_VOLUMES=./CITADEL:/opt/safrano9999/CITADEL/CITADEL_DATA:z
+#default-preset: ./CITADEL_DATA:/opt/safrano9999/CITADEL/CITADEL_DATA:z
+CITADEL_VOLUMES=./CITADEL_DATA:/opt/safrano9999/CITADEL/CITADEL_DATA:z
 
 # May be blank for a mounted host Tailscale socket or TS_USERSPACE=1.
 CITADEL_CAPABILITIES=NET_ADMIN,NET_RAW

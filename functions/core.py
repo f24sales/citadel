@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from webui_transport import tcp_address
+from runtime_state import data_directory, provider_output
 
 from cloudflare_policy import (
     cloudflare_rules,
@@ -19,14 +20,15 @@ from cloudflare_policy import (
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SERVICES_FILE = BASE_DIR / "services.json"
-LAST_SCAN_FILE = BASE_DIR / "last_scan.txt"
+DATA_DIR = data_directory(BASE_DIR)
+SERVICES_FILE = DATA_DIR / "services.json"
+LAST_SCAN_FILE = DATA_DIR / "last_scan.txt"
 EXTENSIONS_DIR = BASE_DIR / "extensions"
 ENABLED_EXT_DIR = EXTENSIONS_DIR / "enabled"
 DISABLED_EXT_DIR = EXTENSIONS_DIR / "disabled"
-PROVIDERS_STATE_FILE = BASE_DIR / "extensions" / "providers_state.json"
+PROVIDERS_STATE_FILE = DATA_DIR / "providers_state.json"
 UI_CONFIG_FILE = EXTENSIONS_DIR / "ui.json"
-PORT_FILTER_FILE = BASE_DIR / "ports.filter.json"
+PORT_FILTER_FILE = DATA_DIR / "ports.filter.json"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -46,7 +48,7 @@ def _read_json(path: Path, default: dict | list | None = None):
 
 
 def _provider_routes_file(provider_dir: Path) -> Path:
-    return provider_dir / "routes.json"
+    return provider_output(provider_dir.parents[2], provider_dir.name)
 
 
 def _route_url(route: object) -> str:
@@ -164,7 +166,7 @@ def _load_providers() -> dict:
         ext = _read_json(provider_dir / "extension.json", {})
         kind = ext.get("kind", "provider")
         if kind == "export":
-            status = _read_json(provider_dir / "status.json", {})
+            status = _read_json(provider_output(provider_dir.parents[2], pid, "export"), {})
             for err in status.get("errors") or []:
                 if err:
                     alerts.append(f"[{pid}] {err}")

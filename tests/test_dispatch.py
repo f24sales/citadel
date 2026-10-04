@@ -21,7 +21,7 @@ class DispatchFilterTests(unittest.TestCase):
         return [
             "dispatch.py",
             "--enabled-dir",
-            str(base / "enabled"),
+            str(base / "extensions/enabled"),
             "--services-file",
             str(base / "services.json"),
             "--cache-dir",
@@ -36,7 +36,7 @@ class DispatchFilterTests(unittest.TestCase):
         ]
 
     def provider(self, base: Path, name: str) -> None:
-        directory = base / "enabled" / name
+        directory = base / "extensions/enabled" / name
         directory.mkdir(parents=True)
         (directory / "extension.json").write_text(
             json.dumps({"provider": name, "label": name.title()}),
@@ -103,7 +103,7 @@ class DispatchFilterTests(unittest.TestCase):
     def test_strict_missing_provider_fails_without_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            (base / "enabled").mkdir()
+            (base / "extensions/enabled").mkdir(parents=True)
             (base / "cache").mkdir()
             (base / "services.json").write_text("{}", encoding="utf-8")
             with (
@@ -184,10 +184,10 @@ class DispatchFilterTests(unittest.TestCase):
             routes_out = Path(commands[0][commands[0].index("--routes-out") + 1])
             self.assertEqual(
                 routes_out,
-                routes_dir / "tailscale" / "routes.json",
+                routes_dir / "tailscale-routes.json",
             )
             self.assertTrue(routes_out.is_file())
-            self.assertFalse((base / "enabled" / "tailscale" / "routes.json").exists())
+            self.assertFalse((base / "extensions/enabled" / "tailscale" / "routes.json").exists())
 
 
 if __name__ == "__main__":

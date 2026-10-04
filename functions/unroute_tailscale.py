@@ -15,6 +15,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "providers"))
 from providers.atomic_io import atomic_write_json
+from runtime_state import data_directory
 from providers.tailscale import (
     node_ports,
     read_live_serve,
@@ -22,7 +23,7 @@ from providers.tailscale import (
     serve_management_enabled,
 )
 
-STATE_PATHS = ("tailscale.json", "extensions/enabled/tailscale/routes.json")
+STATE_PATHS = ("CITADEL_DATA/tailscale.json", "CITADEL_DATA/tailscale-routes.json")
 
 
 class UnrouteError(RuntimeError):
@@ -56,7 +57,7 @@ def read_configured_port(project_dir: Path) -> int:
 
 
 def _clear_metadata(project_dir: Path, released: set[str]) -> None:
-    path = project_dir / "services.json"
+    path = data_directory(project_dir) / "services.json"
     payload = read_json_object(path)
     if payload is not None:
         for service in payload.get("http_services", []):
