@@ -30,6 +30,24 @@ def write_json(path: str, payload: Any) -> None:
     atomic_write_json(path, payload)
 
 
+def adding() -> bool:
+    """Internal invocation mode, never a persistent configuration setting."""
+    return os.environ.get("CITADEL_SCAN_ADD") == "1"
+
+
+def write_routes(path: str, payload: dict) -> None:
+    if adding():
+        previous = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                previous = json.load(handle)
+            if not isinstance(previous, dict) or not isinstance(previous.get("services"), dict):
+                raise ValueError("Invalid existing routes; Add aborted")
+        payload["services"] = {**payload.get("services", {}), **previous.get("services", {})}
+        payload["available"] = bool(payload["services"])
+    write_json(path, payload)
+
+
 def parse_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -45,6 +63,9 @@ def routable_services(payload: Any, key: str = "http_services") -> list[dict[str
     if not isinstance(rows, list):
         return []
     services = [row for row in rows if isinstance(row, dict)]
+    if adding():
+        ports = set(payload.get("added_ports", []))
+        services = [row for row in services if row.get("port") in ports]
     if not parse_bool(payload.get("https_only")):
         return services
     return [

@@ -13,6 +13,7 @@ Environment=FASTAPI_HOST=0.0.0.0
 # Fedora's -s also hides system-wide pip packages in /usr/local. The cascade
 # installs dependencies there; the standalone RPM image keeps its own -s CMD.
 ExecStart=/usr/bin/python3 webui.py
+PassEnvironment=CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE
 ExecStartPost=/usr/bin/python3 webui.py --wait-ready /usr/local/libexec/fedora45-wait-ready
 Restart=on-failure
 

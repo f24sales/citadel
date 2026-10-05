@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -12,10 +13,13 @@ from cloudflare_api import CloudflareAPI, CloudflareAPIError
 from common import (
     ROUTE_SCHEMA_VERSION,
     now_iso,
+    parse_bool,
     read_json,
     routable_services,
     route_record,
     write_json,
+    write_routes,
+    adding,
 )
 
 
@@ -88,11 +92,28 @@ def ensure_one_time_pin(
     return [*providers, provider]
 
 
-def reset_tunnel(
+def matching_fields(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    # Cloudflare adds metadata and may reorder email rules in its responses.
+    for key, value in expected.items():
+        current = actual.get(key)
+        if isinstance(value, list) and isinstance(current, list):
+            if key == "policies":
+                if any(not isinstance(item, dict) for item in current):
+                    return False
+                current = [{"id": item.get("id"), "precedence": item.get("precedence")}
+                           for item in current if isinstance(item, dict)]
+            value = sorted(json.dumps(item, sort_keys=True) for item in value)
+            current = sorted(json.dumps(item, sort_keys=True) for item in current)
+        if current != value:
+            return False
+    return True
+
+
+def prepare_tunnel(
     api: CloudflareAPI, account_id: str, zone_id: str, tunnel_id: str,
-    desired: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    """Discover remotely, clear the configured tunnel, then delete its bindings.
+    desired: dict[str, dict[str, Any]], persistent: bool, add: bool = False,
+) -> tuple[dict[str, Any], set[str], dict[str, str], set[str]]:
+    """Discover remotely; retire only changed/stale bindings, or reset everything.
 
     DNS is removed last and recreated first, so even an interrupted run can
     discover the remaining Access objects next time without a local ID ledger.
@@ -146,32 +167,102 @@ def reset_tunnel(
         if not resource.get("id"):
             raise CloudflareAPIError("Cloudflare resource is missing an ID; reset aborted")
 
-    config = {**config, "ingress": [{"service": "http_status:404"}]}
-    api.update_tunnel_configuration(account_id, tunnel_id, config)
+    keep_dns: set[str] = set()
+    keep_policies: dict[str, str] = {}
+    keep_apps: set[str] = set()
+    if persistent or add:
+        for record in owned_records:
+            hostname = record["name"]
+            if hostname in desired and record.get("proxied") is True and record.get("ttl") == 1:
+                keep_dns.add(record["id"])
+        for policy in owned_policies:
+            hostname = policy["name"].removeprefix(ACCESS_POLICY_PREFIX)
+            route = desired.get(hostname, {})
+            if not route.get("whitelist"):
+                continue
+            expected = access_policy_payload(hostname, route["emails"])
+            # Precedence belongs to the application's policy binding, not the
+            # reusable policy returned by Cloudflare's policy inventory.
+            expected.pop("precedence")
+            if hostname not in keep_policies and matching_fields(policy, expected):
+                keep_policies[hostname] = policy["id"]
+        for app in owned_apps:
+            hostname = app["domain"]
+            if hostname in keep_policies and matching_fields(
+                    app, access_app_payload(hostname, keep_policies[hostname])):
+                keep_apps.add(app["id"])
+
+    if add:
+        # Never remove/reconfigure an existing remote object in Add mode.
+        # Matching remnants from an interrupted addition may be reused.
+        for record in owned_records:
+            if record["name"] in desired and record["id"] not in keep_dns:
+                raise CloudflareAPIError("Existing DNS differs; Add will not overwrite it")
+        for app in owned_apps:
+            if app["domain"] in desired and app["id"] not in keep_apps:
+                raise CloudflareAPIError("Existing Access app differs; Add will not overwrite it")
+        for policy in owned_policies:
+            hostname = policy["name"].removeprefix(ACCESS_POLICY_PREFIX)
+            if hostname in desired and policy["id"] not in keep_policies.values():
+                raise CloudflareAPIError("Existing Access policy differs; Add will not overwrite it")
+        for entry in ingress:
+            hostname = entry.get("hostname")
+            if hostname in desired:
+                route = desired[hostname]
+                expected = {"hostname": hostname, "service": f"{route['scheme']}://{route['origin_host']}:{route['origin_port']}"}
+                if route["scheme"] == "https":
+                    expected["originRequest"] = {"noTLSVerify": True}
+                if entry != expected:
+                    raise CloudflareAPIError("Existing tunnel route differs; Add will not overwrite it")
+        return (config, {r["name"] for r in owned_records if r["id"] in keep_dns},
+                keep_policies, {a["domain"] for a in owned_apps if a["id"] in keep_apps})
+
+    # Block affected hostnames BEFORE removing Access controls. Unchanged
+    # routes keep serving; a partial failure cannot expose changed/private ones.
+    ready_hosts = {
+        hostname for hostname, route in desired.items()
+        if (not route["whitelist"] or any(
+            app["domain"] == hostname and app["id"] in keep_apps for app in owned_apps))
+    } if persistent else set()
+    retiring = {app["domain"] for app in owned_apps if app["id"] not in keep_apps}
+    safe_ingress = [entry for entry in ingress
+                    if entry.get("hostname") in ready_hosts - retiring]
+    safe_config = {**config, "ingress": safe_ingress + [{"service": "http_status:404"}]}
+    if not persistent or safe_config != config:
+        api.update_tunnel_configuration(account_id, tunnel_id, safe_config)
     for app in owned_apps:
-        api.delete_access_app(account_id, app["id"])
+        if app["id"] not in keep_apps:
+            api.delete_access_app(account_id, app["id"])
     for policy in owned_policies:
-        api.delete_access_policy(account_id, policy["id"])
+        if policy["id"] not in keep_policies.values():
+            api.delete_access_policy(account_id, policy["id"])
     for record in owned_records:
-        api.delete_dns_record(zone_id, record["id"])
-    return config
+        if record["id"] not in keep_dns:
+            api.delete_dns_record(zone_id, record["id"])
+    return (safe_config, {r["name"] for r in owned_records if r["id"] in keep_dns},
+            keep_policies, {a["domain"] for a in owned_apps if a["id"] in keep_apps})
 
 
 def create_bindings(
     api: CloudflareAPI, account_id: str, zone_id: str, tunnel_id: str,
     desired: dict[str, dict[str, Any]],
+    dns: set[str], policies: dict[str, str], apps: set[str],
 ) -> None:
     # Keep all routes disabled until DNS and every requested access rule exist.
     for hostname in sorted(desired):
-        api.create_tunnel_dns(zone_id, hostname, tunnel_id)
+        if hostname not in dns:
+            api.create_tunnel_dns(zone_id, hostname, tunnel_id)
     for hostname, route in desired.items():
-        if route["whitelist"]:
-            policy = api.create_access_policy(
-                account_id, access_policy_payload(hostname, route["emails"]))
-            if not policy.get("id"):
-                raise CloudflareAPIError("Created Access policy has no ID")
+        if route["whitelist"] and hostname not in apps:
+            policy_id = policies.get(hostname)
+            if not policy_id:
+                policy = api.create_access_policy(
+                    account_id, access_policy_payload(hostname, route["emails"]))
+                policy_id = policy.get("id")
+                if not policy_id:
+                    raise CloudflareAPIError("Created Access policy has no ID")
             app = api.create_access_app(
-                account_id, access_app_payload(hostname, policy["id"]))
+                account_id, access_app_payload(hostname, policy_id))
             if not app.get("id"):
                 raise CloudflareAPIError("Created Access application has no ID")
 
@@ -191,7 +282,6 @@ def main() -> int:
     functions_dir = root / "functions"
     sys.path.insert(0, str(functions_dir))
     from cloudflare_policy import cloudflare_rules, resolve_hostname
-    from runtime_state import data_directory
 
     get = load_project_getter(root)
     ext_cfg = read_json(f"{args.provider_dir}/extension.json", {})
@@ -224,6 +314,11 @@ def main() -> int:
     missing = [key for key, value in required.items() if not value]
     try:
         if enabled and token:
+            raw = get("CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE", "1").lower().strip()
+            raw = "1" if raw in ("", "blank") else raw
+            if raw not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
+                raise ValueError("CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE must be a boolean")
+            persistent = parse_bool(raw)
             api = CloudflareAPI(token)
             api.verify_token()
             authenticated = True
@@ -241,7 +336,7 @@ def main() -> int:
                     f"CITADEL_CLOUDFLARE_DOMAIN={domain} is outside zone {zone_domain}"
                 )
 
-            policy = cloudflare_rules(data_directory(root) / "ports.filter.json", strict=True)
+            policy = cloudflare_rules(Path(args.services_file).parent / "ports.filter.json", strict=True)
             scanned = services.get("http_services")
             if not isinstance(scanned, list):
                 raise ValueError("services.json must contain an http_services list")
@@ -273,10 +368,11 @@ def main() -> int:
                         "whitelist": bool(rule["whitelist"]),
                         "emails": list(rule["emails"]),
                     }
-            tunnel_config = reset_tunnel(api, account_id, zone_id, tunnel_id, desired)
+            tunnel_config, dns, policies, apps = prepare_tunnel(
+                api, account_id, zone_id, tunnel_id, desired, persistent, adding())
             if any(route["whitelist"] for route in desired.values()):
                 ensure_one_time_pin(api, account_id, domain)
-            create_bindings(api, account_id, zone_id, tunnel_id, desired)
+            create_bindings(api, account_id, zone_id, tunnel_id, desired, dns, policies, apps)
             ingress: list[dict[str, Any]] = []
             for hostname, route in desired.items():
                 entry: dict[str, Any] = {
@@ -301,9 +397,17 @@ def main() -> int:
                     ),
                 )
 
-            api.update_tunnel_configuration(account_id, tunnel_id, {
-                **tunnel_config, "ingress": ingress + [{"service": "http_status:404"}],
-            })
+            if adding():
+                existing = tunnel_config.get("ingress", [])
+                if existing and ("hostname" in existing[-1] or any("hostname" not in entry for entry in existing[:-1])):
+                    raise CloudflareAPIError("Invalid catch-all ordering; Add aborted")
+                names = {entry.get("hostname") for entry in existing}
+                ingress = existing[:-1] + [entry for entry in ingress if entry["hostname"] not in names] + (existing[-1:] or [{"service": "http_status:404"}])
+            else:
+                ingress += [{"service": "http_status:404"}]
+            updated_config = {**tunnel_config, "ingress": ingress}
+            if updated_config != tunnel_config:
+                api.update_tunnel_configuration(account_id, tunnel_id, updated_config)
     except (CloudflareAPIError, ValueError, OSError) as exc:
         errors.append(str(exc))
         routes = {}
@@ -312,6 +416,8 @@ def main() -> int:
     all_services = all_services if isinstance(all_services, list) else []
     for item in all_services:
         if not isinstance(item, dict):
+            continue
+        if adding() and item.get("port") not in services.get("added_ports", []):
             continue
         urls = item.setdefault("urls", {})
         if isinstance(urls, dict):
@@ -336,7 +442,7 @@ def main() -> int:
         "services": routes,
         "errors": errors,
     }
-    write_json(args.routes_out, payload)
+    write_routes(args.routes_out, payload)
     return 0 if not errors else 1
 
 

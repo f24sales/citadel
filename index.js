@@ -5,7 +5,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 const pluginRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)));
 const defaultServicesPath = path.join(pluginRoot, "CITADEL_DATA", "services.json");
-const defaultPolicyPath = path.join(pluginRoot, "ports.filter.json");
+const defaultPolicyPath = path.join(pluginRoot, "CITADEL_DATA", "ports.filter.json");
 const defaultScanScript = path.join(pluginRoot, "scan.sh");
 const coreBridge = path.join(pluginRoot, "functions", "plugin_bridge.py");
 const providerNames = new Set([
@@ -185,13 +185,14 @@ function navigationBlocks(activeProvider, data) {
     },
     {
       type: "buttons",
-      buttons: [commandButton("Scan", `/citadel scan ${activeProvider}`, "success")],
+      buttons: [commandButton("Scan", `/citadel scan ${activeProvider}`, "success"),
+        commandButton("Add", `/citadel add ${activeProvider}`, "success")],
     },
   ];
-  if (activeProvider === "cloudflare") {
+  if (activeProvider === "cloudflare" || activeProvider === "tailscale") {
     blocks.push({
       type: "buttons",
-      buttons: [commandButton("EDIT", "/citadel cloudflare edit", "primary")],
+      buttons: [commandButton("EDIT", `/citadel ${activeProvider} edit`, "primary")],
     });
   }
   return blocks;
@@ -462,9 +463,9 @@ async function handleCloudflareCommand(args, data, api) {
   return { text: "Usage: /citadel cloudflare [edit|whitelist|email|remove-email|apply]" };
 }
 
-function runScanProcess(script) {
+function runScanProcess(script, add = false) {
   return new Promise((resolve, reject) => {
-    const child = spawn("/bin/bash", [script], {
+    const child = spawn("/bin/bash", [script, ...(add ? ["--add"] : [])], {
       cwd: path.dirname(script),
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -496,14 +497,15 @@ function runScanProcess(script) {
   });
 }
 
-async function runScan(ctx) {
+async function runScan(ctx, add = false) {
+  if (activeScan && activeScan.add !== add) {
+    throw new Error("Another Scan/Add is already running. Wait for it to finish.");
+  }
   if (!activeScan) {
     const script = resolveConfiguredPath(ctx, "scanScript", defaultScanScript);
-    activeScan = runScanProcess(script).finally(() => {
-      activeScan = undefined;
-    });
+    activeScan = { add, promise: runScanProcess(script, add).finally(() => { activeScan = undefined; }) };
   }
-  return activeScan;
+  return activeScan.promise;
 }
 
 async function handleCommand(ctx, api) {
@@ -511,18 +513,30 @@ async function handleCommand(ctx, api) {
   const parts = raw.split(/\s+/);
   const action = parts[0].toLowerCase();
 
-  if (action === "scan") {
-    await runScan(api);
+  if (action === "scan" || action === "add") {
+    await runScan(api, action === "add");
     const provider = providerNames.has(parts[1]?.toLowerCase())
       ? parts[1].toLowerCase()
       : "localhost";
     const scannedData = await readDashboard(api);
     const reply = createProviderReply(scannedData, provider);
-    reply.text = `CITADEL scan completed - ${providerLabel(scannedData, provider)}`;
+    reply.text = `CITADEL ${action} completed - ${providerLabel(scannedData, provider)}`;
     return reply;
   }
 
+  if (action === "tailscale" && parts[1] === "reset") {
+    if (activeScan) throw new Error("Scan/Add is running; Serve reset was not started.");
+    await runCoreProcess(api, "reset-serve");
+    return { text: "Tailscale Serve routes reset. Start the service, then run Scan. Tailscale SSH is unchanged." };
+  }
   const data = await readDashboard(api);
+  if (action === "tailscale" && parts[1] === "edit") {
+    return { text: "Tailscale — Edit. Reset removes all Serve routes on this node; it does not start a scan.",
+      presentation: { tone: "neutral", blocks: [{ type: "buttons", buttons: [
+        commandButton("Reset Serve Routes", "/citadel tailscale reset", "danger"),
+        commandButton("Back", "/citadel tailscale", "secondary"),
+      ] }] } };
+  }
   if (action === "cloudflare") {
     return handleCloudflareCommand(parts.slice(1), data, api);
   }
@@ -531,7 +545,7 @@ async function handleCommand(ctx, api) {
   }
   if (!providerNames.has(action)) {
     return {
-      text: "Usage: /citadel [localhost|subnet|tailscale|cloudflare|other|scan]",
+      text: "Usage: /citadel [localhost|subnet|tailscale|cloudflare|other|scan|add]",
     };
   }
   return createProviderReply(data, action);

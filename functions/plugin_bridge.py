@@ -24,12 +24,16 @@ def main() -> int:
     parser.add_argument("--policy-path")
     subparsers = parser.add_subparsers(dest="operation", required=True)
     subparsers.add_parser("dashboard")
+    subparsers.add_parser("reset-serve")
     save_parser = subparsers.add_parser("save-cloudflare-rule")
     save_parser.add_argument("port", type=int)
     args = parser.parse_args()
     _configure_paths(args)
 
-    if args.operation == "dashboard":
+    if args.operation == "reset-serve":
+        from reset_serve import reset
+        payload = reset()
+    elif args.operation == "dashboard":
         payload = core.build_dashboard()
     else:
         rule = json.load(sys.stdin)

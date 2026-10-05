@@ -16,6 +16,14 @@
       "scanScript": {
         "type": "string",
         "description": "Optional path to the CITADEL scan.sh script."
+      },
+      "policyPath": {
+        "type": "string",
+        "description": "Optional path to CITADEL_DATA/ports.filter.json."
+      },
+      "pythonPath": {
+        "type": "string",
+        "description": "Optional Python executable used by the CITADEL core bridge."
       }
     }
   }

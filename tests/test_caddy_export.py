@@ -15,6 +15,22 @@ spec.loader.exec_module(caddy)
 
 
 class CaddyExportTests(unittest.TestCase):
+    def test_add_preserves_offline_blocks_and_blank_step_allocations(self):
+        self.assertTrue(self.run_export(steps="")["available"])
+        destination = self.root / "CITADEL_DATA/CADDY/Caddyfile"
+        before = destination.read_text()
+        self.services([4096])
+        path = self.root / "CITADEL_DATA/services.json"
+        payload = json.loads(path.read_text())
+        payload["added_ports"] = [4096]
+        path.write_text(json.dumps(payload))
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            result = self.run_export(steps="")
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(destination.read_text().startswith(before))
+        self.assertIn("# backend 4096 -> HTTPS 4002", destination.read_text())
+        self.assertEqual(result["mappings_count"], 3)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

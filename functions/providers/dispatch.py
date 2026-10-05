@@ -7,7 +7,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from common import now_iso, read_json, write_json
+from common import now_iso, read_json, write_json, adding
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime_state import provider_output
 
@@ -76,6 +76,7 @@ def main() -> int:
             if provider_id in by_id
         ]
 
+    previous_state = read_json(args.state_file, {}) if adding() else {}
     state = {
         "generated_at": now_iso(),
         "enabled_providers": [],
@@ -278,6 +279,11 @@ def main() -> int:
                     state["errors"].append(message)
                 print(f"    stderr: {line}")
 
+    if adding():
+        state["providers"] = {**previous_state.get("providers", {}), **state["providers"]}
+        for key in ("enabled_providers", "considered_providers", "available_providers",
+                    "enabled_exports", "considered_exports", "available_exports"):
+            state[key] = list(dict.fromkeys(previous_state.get(key, []) + state[key]))
     write_json(args.state_file, state)
     considered_count = len(state["considered_providers"])
     available_count = len(state["available_providers"])

@@ -26,6 +26,12 @@ provider is disabled or unavailable.
 - Supports port allowlists, blocklists, Cloudflare hostnames, and Access email
   policies.
 - Exposes the same route data through the `/citadel` OpenClaw command.
+- `./scan.sh --add` probes only unknown ports, appending routes without resetting
+  Serve, removing Cloudflare bindings, renumbering Caddy mappings or touching old logos.
+  Failed additions remain pending and are retried on the next Add.
+- Telegram offers **Add** next to **Scan**, and **Tailscale → EDIT → Reset Serve Routes**.
+  `/citadel tailscale reset` explicitly clears Serve only (not SSH), without scanning.
+  Scans and resets share a lock; `/citadel add` is the fast append-only command.
 
 ## Supported deployment modes
 
@@ -90,7 +96,7 @@ Run one scan, then start the dashboard:
 
 ```bash
 ./scan.sh
-/usr/bin/python3 -s webui.py
+/usr/bin/python3 webui.py
 ```
 
 The default example binds the dashboard to `127.0.0.1:11000`.
@@ -99,8 +105,8 @@ The default example binds the dashboard to `127.0.0.1:11000`.
 
 `set_daemon.sh` checks the system dependencies, writes and links the unit, then
 enables and restarts `citadel.service`. It defaults explicitly to
-`/usr/bin/python3`, regardless of an activated environment in `PATH`, and uses
-`-s` to ignore per-user Python packages. `PYTHON_BIN` can select a different
+`/usr/bin/python3`, regardless of an activated environment in `PATH`.
+`PYTHON_BIN` can select a different
 system interpreter when required.
 
 ```bash
@@ -274,6 +280,7 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_LOGO_PERSISTENT` | `1` | Retain logos independently; service metadata is always rescanned |
 | `CITADEL_USER_AGENT` | `Mozilla/5.0 (compatible; CITADEL/1.0)` | HTTP probe user agent |
 | `CITADEL_CLOUDFLARE_DOMAIN` | empty | DNS suffix used for generated hostnames |
+| `CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE` | `1` | Keep unchanged Cloudflare bindings; 0 deletes/rebuilds all managed bindings each scan. Local CF output remains ephemeral. |
 | `CITADEL_CLOUDFLARE_WWW443` | `0` | Add `www.<domain>` for Cloudflare port 443 |
 | `CITADEL_CLOUDFLARE_DOMAIN443` | `0` | Add the bare domain for Cloudflare port 443 |
 | `CITADEL_CLOUDFLARE_ACCOUNT_ID` | empty | Existing Cloudflare account ID |
@@ -580,19 +587,22 @@ invalid tokens or incomplete required configuration are reported. It manages:
 - ingress entries on an existing named Tunnel;
 - optional Cloudflare Access email policies.
 
-Every successful scan first queries Cloudflare, clears **all ingress on the
-configured Tunnel** to a 404 fallback, and deletes its DNS bindings and Citadel
-Access applications/policies. It then creates fresh bindings and enables only
-the newly discovered routes, targeting `127.0.0.1:<original-port>` with the
-discovered HTTP/HTTPS scheme. Unchanged services are recreated too; an empty
-scan leaves the Tunnel empty. Use a dedicated Tunnel for this instance.
+`CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE=1` is the default preset. Every scan
+queries Cloudflare and retains unchanged DNS bindings, Access rules and Tunnel
+routes. Only changes are applied; disappeared services are removed. Unchanged
+scans perform no writes to Cloudflare. Set the flag to `0` to clear all ingress
+on the configured Tunnel to a 404 fallback and recreate all its managed bindings
+on every scan. Both modes target `127.0.0.1:<original-port>` with the discovered
+HTTP/HTTPS scheme; an empty scan leaves the Tunnel empty. Use a dedicated Tunnel.
 
 No old local route file or resource IDs are read. All relevant inventory pages
 are fetched before reset. Invalid scans, inventory failures and foreign-object
-conflicts abort before clearing; failed deletion/recreation never enables the
-new routes. There is an intentional interruption during each rebuild.
-Other Tunnels and unrelated DNS/Access objects are not reset. No Cloudflare
-volume or persistence option is offered; local route output is disposable.
+conflicts abort before changes. Routes whose Access rules are replaced are
+disabled first and enabled only after successful recreation. A full rebuild
+intentionally interrupts all routes; persistent mode leaves unchanged ones up.
+Other Tunnels and unrelated DNS/Access objects are not reset. The flag controls
+server-side behavior only: local route output is rewritten and remains ephemeral
+in `cache/`, with no Cloudflare volume.
 See [CITADEL_CLOUDFLARE.md](CITADEL_CLOUDFLARE.md) for the required API
 permissions and provider-specific setup.
 

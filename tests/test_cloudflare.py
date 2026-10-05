@@ -328,6 +328,28 @@ class CloudflareDefaultsTests(unittest.TestCase):
 
 
 class CloudflareActivationTests(unittest.TestCase):
+    def test_add_keeps_remote_routes_access_and_dns_even_when_persistence_is_zero(self):
+        self.existing_protected_route()
+        self.settings["CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE"] = "0"
+        old_ingress = list(self.api.tunnel_configuration.return_value["ingress"])
+        old_route = {"url": "https://8000.services.example.net"}
+        self.write("cache/cloudflare-routes.json", {"services": {"8000": old_route}})
+        self.write("CITADEL_DATA/services.json", {"http_services": [
+            {"port": 8000, "scheme": "http", "urls": {"cloudflare": old_route["url"]}},
+            {"port": 8001, "scheme": "http"}], "added_ports": [8001]})
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            code, payload = self.run_provider()
+        self.assertEqual(code, 0, payload["errors"])
+        self.assertEqual(payload["services"]["8000"], old_route)
+        self.api.delete_dns_record.assert_not_called()
+        self.api.delete_access_policy.assert_not_called()
+        self.api.delete_access_app.assert_not_called()
+        self.api.update_tunnel_configuration.assert_called_once()
+        ingress = self.api.update_tunnel_configuration.call_args.args[-1]["ingress"]
+        self.assertEqual(ingress[0], old_ingress[0])
+        self.assertEqual(ingress[-1], old_ingress[-1])
+        self.assertEqual(ingress[1]["hostname"], "8001.services.example.net")
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -342,6 +364,7 @@ class CloudflareActivationTests(unittest.TestCase):
         (self.base / "CITADEL_DATA/last_scan.txt").write_text("2026-10-02T12:00:00Z")
         self.settings = {
             "CLOUDFLARE_API_TOKEN": "unit-test-token",
+            "CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE": "0",
             "CITADEL_CLOUDFLARE_DOMAIN": "services.example.net",
             "CITADEL_CLOUDFLARE_ACCOUNT_ID": "account",
             "CITADEL_CLOUDFLARE_ZONE_ID": "zone",
@@ -408,6 +431,93 @@ class CloudflareActivationTests(unittest.TestCase):
         self.api.verify_token.assert_called_once_with()
         self.api.tunnel_connections.assert_called_once_with("account", "tunnel")
         self.api.zone.assert_called_once_with("zone")
+
+    def existing_protected_route(self):
+        self.settings.pop("CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE", None)
+        hostname = "8000.services.example.net"
+        self.api.tunnel_configuration.return_value = {"ingress": [
+            {"hostname": hostname, "service": "http://127.0.0.1:8000"},
+            {"service": "http_status:404"}]}
+        self.api.dns_records.return_value = [{"id": "dns", "name": hostname,
+            "type": "CNAME", "content": "tunnel.cfargotunnel.com", "proxied": True, "ttl": 1}]
+        policy = {"id": "policy", **access_policy_payload(hostname, ["user@example.net"])}
+        policy.pop("precedence")  # Real reusable-policy responses omit this.
+        self.api.access_policies.return_value = [policy]
+        self.api.access_apps.return_value = [{"id": "app",
+            **cloudflare_provider.access_app_payload(hostname, "policy")}]
+        self.api.access_identity_providers.return_value = [{"type": "onetimepin"}]
+        self.write("CITADEL_DATA/ports.filter.json", {"cloudflare": {"8000": {
+            "whitelist": True, "emails": ["user@example.net"]}}})
+        return hostname
+
+    def test_default_preserves_remote_bindings_without_any_local_routes_file(self):
+        self.existing_protected_route()
+        for value in (None, "", "blank", "1", "true"):
+            with self.subTest(value=value):
+                if value is not None:
+                    self.settings["CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE"] = value
+                self.api.reset_mock()
+                (self.base / "cache/cloudflare-routes.json").unlink(missing_ok=True)
+                code, payload = self.run_provider()
+                self.assertEqual(code, 0, payload["errors"])
+                self.assertEqual(set(payload["services"]), {"8000"})
+                self.assert_no_remote_mutations()
+
+    def test_persistent_public_route_does_not_create_access_or_rewrite_ingress(self):
+        self.existing_protected_route()
+        self.write("CITADEL_DATA/ports.filter.json", {})
+        self.api.access_apps.return_value = []
+        self.api.access_policies.return_value = []
+        self.assertEqual(self.run_provider()[0], 0)
+        self.assert_no_remote_mutations()
+
+    def test_changed_email_blocks_only_affected_route_before_replacing_access(self):
+        self.existing_protected_route()
+        untouched = {"hostname": "9000.services.example.net", "service": "http://127.0.0.1:9000"}
+        self.api.tunnel_configuration.return_value["ingress"].insert(1, untouched)
+        self.api.dns_records.return_value.append({"id": "dns-9000", "name": untouched["hostname"],
+            "type": "CNAME", "content": "tunnel.cfargotunnel.com", "proxied": True, "ttl": 1})
+        self.write("CITADEL_DATA/services.json", {"http_services": [
+            {"port": 8000, "scheme": "http"}, {"port": 9000, "scheme": "http"}]})
+        self.write("CITADEL_DATA/ports.filter.json", {"cloudflare": {"8000": {
+            "whitelist": True, "emails": ["changed@example.net"]}}})
+        self.assertEqual(self.run_provider()[0], 0)
+        self.api.delete_dns_record.assert_not_called()
+        self.api.create_tunnel_dns.assert_not_called()
+        self.api.delete_access_app.assert_called_once_with("account", "app")
+        self.api.delete_access_policy.assert_called_once_with("account", "policy")
+        first = self.api.update_tunnel_configuration.call_args_list[0].args[2]["ingress"]
+        self.assertEqual(first, [untouched, {"service": "http_status:404"}])
+        mutations = [call[0] for call in self.api.method_calls if call[0].startswith(("update_", "delete_", "create_"))]
+        self.assertEqual(mutations[0], "update_tunnel_configuration")
+        self.assertEqual(mutations[-1], "update_tunnel_configuration")
+
+    def test_access_creation_failure_leaves_changed_route_blocked(self):
+        self.existing_protected_route()
+        self.api.access_policies.return_value[0]["decision"] = "bypass"
+        self.api.create_access_app.side_effect = CloudflareAPIError("creation denied")
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["services"], {})
+        self.api.update_tunnel_configuration.assert_called_once()
+        self.assertEqual(self.api.update_tunnel_configuration.call_args.args[2]["ingress"],
+                         [{"service": "http_status:404"}])
+
+    def test_persistence_still_removes_disappeared_service(self):
+        self.existing_protected_route()
+        self.write("CITADEL_DATA/services.json", {"http_services": []})
+        self.assertEqual(self.run_provider()[0], 0)
+        self.api.delete_access_app.assert_called_once_with("account", "app")
+        self.api.delete_access_policy.assert_called_once_with("account", "policy")
+        self.api.delete_dns_record.assert_called_once_with("zone", "dns")
+        self.api.update_tunnel_configuration.assert_called_once()
+
+    def test_invalid_persistence_value_never_mutates_remote_state(self):
+        self.settings["CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE"] = "typo"
+        code, payload = self.run_provider()
+        self.assertEqual(code, 1)
+        self.assertIn("must be a boolean", payload["errors"][0])
+        self.assert_no_remote_mutations()
 
     def test_legacy_toggle_values_are_never_read_or_honored(self):
         for value in ("0", "false", "1", "true", "invalid", ""):

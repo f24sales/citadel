@@ -87,6 +87,11 @@ This requires `Account -> Access: Organizations, Identity Providers, and Groups 
 
 ## 2. Conservative Cloudflare Mapping Defaults
 
+`CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE=1` (default preset) keeps unchanged
+Cloudflare-side bindings and applies only changes. Set `0` for a full server-side
+reset/rebuild on each scan. Local CF output stays ephemeral in either mode;
+no Cloudflare volume is required.
+
 This stage decides how newly discovered local services should be exposed through Cloudflare. Cloudflare routes are public internet routes, so the default should be conservative.
 
 ### User

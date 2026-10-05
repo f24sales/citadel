@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from common import now_iso, parse_bool, read_json, routable_services, route_record, write_json, ROUTE_SCHEMA_VERSION
+from common import now_iso, parse_bool, read_json, routable_services, route_record, write_json, write_routes, adding, ROUTE_SCHEMA_VERSION
 
 
 def command(args: list[str], *, timeout: int = 15) -> str:
@@ -198,10 +198,12 @@ def validate_services(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, manage_serve, skipped):
     for service in services_payload.get("http_services", []):
+        if adding() and service.get("port") not in services_payload.get("added_ports", []):
+            continue
         if not isinstance(service.get("urls"), dict):
             service["urls"] = {}
         service["urls"].pop("tailscale", None)
-    if os.path.isdir(args.cache_dir):
+    if not adding() and os.path.isdir(args.cache_dir):
         for name in os.listdir(args.cache_dir):
             if name.endswith(".json"):
                 path = os.path.join(args.cache_dir, name)
@@ -224,8 +226,8 @@ def publish(args, ext, services_payload, services, routes, errors, enabled, runn
         "domain": domain, "serve_enabled": manage_serve, "route_schema": ROUTE_SCHEMA_VERSION,
         "services": routes, "errors": errors, "skipped": skipped,
     }
-    write_json(args.routes_out, payload)
-    write_json(args.tailscale_file, payload)
+    write_routes(args.routes_out, payload)
+    write_routes(args.tailscale_file, payload)
 
 
 def main() -> int:
@@ -259,9 +261,10 @@ def main() -> int:
             if manage_serve and domain not in cert_domains:
                 raise ValueError("Tailscale has no certificate domain; enable HTTPS certificates manually")
             if manage_serve:
-                command(["tailscale", "serve", "reset"])
+                if not adding():
+                    command(["tailscale", "serve", "reset"])
                 live = read_live_serve()
-                if any(live.get(field) for field in ("TCP", "Web", "AllowFunnel", "Foreground", "Services")):
+                if not adding() and any(live.get(field) for field in ("TCP", "Web", "AllowFunnel", "Foreground", "Services")):
                     raise ValueError("Serve reset did not clear the configuration; rebuild aborted")
             for key, service in sorted(services.items(), key=lambda item: int(item[0])):
                 port = int(key)
@@ -277,6 +280,8 @@ def main() -> int:
                             skipped[key] = "HTTP backend needs an HTTPS frontend; Serve is disabled"
                         continue
                     if not https_route_matches(live, domain, port, target):
+                        if adding() and str(port) in (live.get("TCP") or {}):
+                            raise ValueError("Existing Serve listener differs; Add never overwrites it")
                         # Peer Serve is intercepted before the host kernel.
                         # On TUN nodes, its additional local listener can block
                         # a wildcard backend on restart; see deployment notes.

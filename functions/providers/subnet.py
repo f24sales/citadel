@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from common import ROUTE_SCHEMA_VERSION, now_iso, read_json, routable_services, route_record, write_json
+from common import ROUTE_SCHEMA_VERSION, now_iso, read_json, routable_services, route_record, write_json, write_routes
 
 
 def main() -> int:
@@ -69,7 +69,7 @@ def main() -> int:
         "services": routes,
         "errors": [],
     }
-    write_json(args.routes_out, payload)
+    write_routes(args.routes_out, payload)
     return 0
 
 

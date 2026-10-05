@@ -66,8 +66,8 @@ class ScanIntegrationTests(unittest.TestCase):
                        XDG_RUNTIME_DIR=raw, SCAN_LISTENERS=str(listeners),
                        CITADEL_SCAN_LOCK_FILE=str(base / "scan.lock"))
 
-            def scan():
-                result = subprocess.run(["bash", "scan.sh", "--provider", "localhost"],
+            def scan(*args):
+                result = subprocess.run(["bash", "scan.sh", "--provider", "localhost", *args],
                                         cwd=base, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return json.loads((base / "CITADEL_DATA/services.json").read_text())
@@ -78,6 +78,30 @@ class ScanIntegrationTests(unittest.TestCase):
             logo = base / f"CITADEL_DATA/icons/{port}.svg"
             before = (logo.read_bytes(), logo.stat().st_mtime_ns)
             fixture["title"] = "Changed"
+            # Add is a no-op for known listeners, including absent/offline ones.
+            self.assertEqual(scan("--add"), first)
+            self.assertEqual(fixture["icon_requests"], 1)
+            added_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            threading.Thread(target=added_server.serve_forever, daemon=True).start()
+            self.addCleanup(added_server.server_close)
+            self.addCleanup(added_server.shutdown)
+            new_port = added_server.server_port
+            # The old service is absent from discovery but must remain unchanged.
+            listeners.write_text(f'LISTEN 0 128 127.0.0.1:{new_port} 0.0.0.0:*\n')
+            added = scan("--add")
+            self.assertEqual(next(row for row in added["http_services"] if row["port"] == port), first["http_services"][0])
+            self.assertEqual(added["added_ports"], [new_port])
+            self.assertNotIn("pending_add_ports", added)
+            routes = json.loads((base / "CITADEL_DATA/localhost-routes.json").read_text())
+            self.assertEqual(set(routes["services"]), {str(port), str(new_port)})
+            self.assertEqual((logo.read_bytes(), logo.stat().st_mtime_ns), before)
+            self.assertEqual(scan("--add"), added)
+            fixture["icon_requests"] = 1
+            # Return to the single-service fixture for the full-scan assertions.
+            (base / "CITADEL_DATA/services.json").write_text(json.dumps(first))
+            listeners.write_text("")
+            self.assertEqual(scan("--add"), first)
+            listeners.write_text(f'LISTEN 0 128 127.0.0.1:{port} 0.0.0.0:*\n')
             # Reuse must work without any old cache metadata at all.
             (base / f"cache/{port}.json").unlink()
             second = scan()

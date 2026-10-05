@@ -15,7 +15,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "providers"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import now_iso, write_json
+from common import now_iso, write_json, adding
 from webui_transport import caddy_directory
 from runtime_state import data_directory
 
@@ -167,18 +167,33 @@ def export(root: Path, provider_dir: Path, start_raw: str, steps_raw: str,
             seen.add(port)
             services.append({"port": port, "scheme": row["scheme"]})
         allocation_file = directory / "ports.json"
-        previous = read_object(allocation_file) if remember and allocation_file.exists() else None
+        previous = read_object(allocation_file) if (remember or adding()) and allocation_file.exists() else None
+        old_content = destination.read_text() if adding() and destination.exists() else ""
+        if adding():
+            existing = {backend: int(frontend) for backend, frontend in re.findall(
+                r"^# backend ([0-9]+) -> HTTPS ([0-9]+)$", old_content, re.M)}
+            if old_content and not existing:
+                raise ValueError("Existing Caddyfile has no Citadel mappings; Add aborted")
+            if previous is None:
+                previous = {"start": start, "steps": steps, "ports": existing}
+            services = [row for row in services if row["port"] in read_object(
+                services_file or data_directory(root) / "services.json").get("added_ports", [])
+                and str(row["port"]) not in existing]
+            seen = {row["port"] for row in services}
         assigned = allocate(list(seen), start, steps, previous)
         content = render(services, assigned, backend, hosts, tls_server_name)
+        if adding() and old_content:
+            content = old_content + ("\n" + content if services else "")
         # Reserve slots first; a failed file write must not silently reuse a slot later.
         allocation = {"start": start, "steps": steps, "ports": assigned}
-        if remember and allocation != previous:
+        if (remember or adding()) and allocation != previous:
             write_json(str(allocation_file), allocation)
         write_text(destination, content)
-        if not remember:
+        if not remember and not adding():
             # Only our allocation ledger; never delete the mounted directory.
             allocation_file.unlink(missing_ok=True)
-        payload.update(available=True, generated_file=str(destination), mappings_count=len(services),
+        count = len(re.findall(r"^# backend [0-9]+ -> HTTPS [0-9]+$", content, re.M))
+        payload.update(available=True, generated_file=str(destination), mappings_count=count,
                        artifacts=[{"path": "CITADEL_DATA/CADDY/Caddyfile", "sha256": hashlib.sha256(content.encode()).hexdigest()}])
     except (OSError, ValueError, TypeError) as exc:
         payload["errors"].append(str(exc))

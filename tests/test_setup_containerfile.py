@@ -111,6 +111,14 @@ class SetupContainerfileTests(unittest.TestCase):
         self.assertIn("python3 -s functions/runtime_state.py --image", recipe)
         self.assertNotIn("pip install", recipe)
 
+    def test_cloudflare_server_side_persistence_uses_shared_default_preset(self):
+        example = (ROOT / "config.conf_example").read_text()
+        key = "CITADEL_CLOUDFLARE_SERVERSIDE_PERSISTENCE"
+        self.assertIn(f"#default-preset: 1\n{key}=1", example)
+        unit = (ROOT / "image/runtime/etc/systemd/system/citadel.service").read_text()
+        self.assertIn(f"PassEnvironment={key}", unit)
+        self.assertNotIn("CLOUDFLARE_PERSISTENCE", example)
+
     def test_real_renderer_keeps_bootstrap_and_conditional_mounts(self):
         for name in ("config.sh", "config.conf_example", "container.example"):
             shutil.copy2(ROOT / name, self.root / name)

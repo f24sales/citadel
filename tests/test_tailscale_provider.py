@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,26 @@ def service(port, scheme="http", addr="127.0.0.1"):
 
 
 class TailscaleProviderTests(unittest.TestCase):
+    def test_add_preserves_old_routes_and_never_resets(self):
+        old = {"url": f"https://{DOMAIN}:5800", "owns_listener": True}
+        self.routes.write_text(json.dumps({"services": {"5800": old}}))
+        self.services.write_text(json.dumps({"http_services": [service(5800), service(11000)], "added_ports": [11000]}))
+        (self.cache / "5800.json").write_text('{"tailscale_url":"retained"}')
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            result = self.run_provider(live=live_route(5800))
+        self.assertNotIn(["tailscale", "serve", "reset"], self.commands)
+        self.assertEqual(result["services"]["5800"], old)
+        self.assertEqual(set(result["services"]), {"5800", "11000"})
+        self.assertEqual(json.loads((self.cache / "5800.json").read_text())["tailscale_url"], "retained")
+        self.assertIn("5800", self.live["TCP"])
+
+    def test_add_rejects_existing_conflicting_serve_without_mutation(self):
+        self.services.write_text(json.dumps({"http_services": [service(11000)], "added_ports": [11000]}))
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            result = self.run_provider(live=live_route(11000, target="http://127.0.0.1:42"), expect_rc=1)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue(result["errors"])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -1051,6 +1051,15 @@ add_readonly_shared_bind_mount() {
     case "${configured,,}" in
         ""|blank|null) return 0 ;;
     esac
+    if [[ "$configured" == %config-conf/* ]]; then
+        source="$(realpath -m -- "$DIR/${configured#%config-conf/}")"
+        [[ "$source" == "$(realpath -e -- "$DIR")/"* ]] || {
+            echo "Shared bind source escapes the configuration directory" >&2
+            return 1
+        }
+        mkdir -p -m 0700 -- "$source"
+        configured="$source"
+    fi
     [[ "$configured" == /* && "$configured" != *:* \
         && "$configured" != *[[:space:]]* \
         && "$configured" != *$'\n'* && "$configured" != *$'\r'* ]] || {

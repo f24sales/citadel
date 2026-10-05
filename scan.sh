@@ -6,16 +6,19 @@ umask 022
 
 usage() {
     cat >&2 <<'EOF'
-Usage: ./scan.sh [--provider PROVIDER_ID]
+Usage: ./scan.sh [--add] [--provider PROVIDER_ID]
 
 Without --provider, scan listeners and reconcile every enabled provider.
 With --provider, scan listeners and reconcile only that provider.
+With --add, probe only unknown ports and append routes without resetting any.
 EOF
 }
 
 PROVIDER_FILTER=""
+export CITADEL_SCAN_ADD=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --add) export CITADEL_SCAN_ADD=1; shift ;;
         --provider)
             [[ $# -ge 2 && -n "$2" ]] || {
                 usage
@@ -381,6 +384,14 @@ try_fetch_icon() {
 
 echo "=== Probing ports for HTTP/HTTPS ==="
 
+if [[ "$CITADEL_SCAN_ADD" == 1 ]]; then
+    PENDING_ADD="$(python3 "$FUNCTIONS_DIR/scan_add.py" "$SS_FILE" "$SERVICES_FILE")"
+    if [[ "$PENDING_ADD" == 0 && "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$SS_FILE")" == 0 ]]; then
+        echo "Add: no new listening ports; existing routes untouched"
+        exit 0
+    fi
+fi
+
 python3 -c "
 import json
 import sys
@@ -562,7 +573,7 @@ if not isinstance(ss_raw, list):
 active_ports = {str(row['port']) for row in ss_raw}
 for entry in os.scandir(cache_dir):
     stem, suffix = os.path.splitext(entry.name)
-    if suffix == '.json' and stem.isdigit() and stem not in active_ports:
+    if os.environ.get('CITADEL_SCAN_ADD') != '1' and suffix == '.json' and stem.isdigit() and stem not in active_ports:
         os.unlink(entry.path)
 
 http_services = []
@@ -635,6 +646,11 @@ payload = {
     'http_services': http_services,
     'other_ports': other_ports,
 }
+if os.environ.get('CITADEL_SCAN_ADD') == '1':
+    from pathlib import Path
+    sys.path.insert(0, str(Path(providers_dir).parent))
+    from scan_add import merge_services
+    payload = merge_services(Path(out_file), payload)
 atomic_write_json(out_file, payload, indent=None)
 " "$SS_FILE" "$CACHE_DIR" "$ICONS_DIR" "$SERVICES_FILE" "$PROVIDERS_DIR" "$HTTPS_ONLY"
 echo "services.json written"
@@ -642,11 +658,13 @@ echo
 
 # Hide only the duplicate WebUI tile; retain its backend for route providers.
 # Match this running instance, never a different container's Citadel by title.
+if [[ "$CITADEL_SCAN_ADD" != 1 ]]; then
 python3 "$FUNCTIONS_DIR/scan_policy.py" \
     --services "$SERVICES_FILE" \
     --http-port "$CITADEL_PORT_VALUE" \
     --hide-http "$CITADEL_HIDE_HTTP_VALUE" \
     --user-agent "$CITADEL_USER_AGENT_VALUE"
+fi
 
 if [[ -z "$PROVIDER_FILTER" ]]; then
     echo "=== Applying Cloudflare Defaults ==="
@@ -694,4 +712,15 @@ fi
 echo
 
 date '+%Y-%m-%d %H:%M:%S' > "$TIMESTAMP_FILE"
+if [[ "$CITADEL_SCAN_ADD" == 1 ]]; then
+    PYTHONPATH="$PROVIDERS_DIR" python3 - "$SERVICES_FILE" <<'PY'
+import json
+import sys
+from atomic_io import atomic_write_json
+with open(sys.argv[1]) as handle:
+    payload = json.load(handle)
+payload.pop("pending_add_ports", None)
+atomic_write_json(sys.argv[1], payload)
+PY
+fi
 echo "=== Done: $(cat "$TIMESTAMP_FILE") ==="
