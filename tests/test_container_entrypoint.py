@@ -4,9 +4,9 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from container.entrypoint import configure_optional_clients, enabled
+from container.entrypoint import configure_optional_clients, enabled, start_tailscale
 
 
 class OptionalClientTests(unittest.TestCase):
@@ -40,7 +40,17 @@ class OptionalClientTests(unittest.TestCase):
     def test_present_credentials_leave_both_extensions_enabled(self):
         with patch.dict(os.environ, {"TS_AUTHKEY": "test-only", "CLOUDFLARE_API_TOKEN": "test-only"}, clear=True):
             configure_optional_clients(self.root)
-        self.assertTrue(enabled(self.root, "tailscale"))
+            self.assertTrue(enabled(self.root, "tailscale"))
+
+    def test_tailscaled_gets_certificate_storage_as_well_as_identity_state(self):
+        runtime = Mock()
+        with patch.dict(os.environ, {"TS_AUTHKEY": "test-only"}, clear=True), \
+                patch("container.entrypoint.Path.exists", return_value=False), \
+                patch("container.entrypoint.tailscale_state", return_value="Running"), \
+                patch("container.entrypoint.subprocess.run", return_value=Mock(returncode=0)):
+            start_tailscale(runtime, self.root)
+        runtime.start.assert_called_once_with(
+            "tailscaled", f"--statedir={self.root / 'CITADEL_TAILSCALE'}")
         self.assertTrue(enabled(self.root, "cloudflare"))
 
 

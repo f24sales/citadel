@@ -80,7 +80,7 @@ def start_tailscale(runtime, root):
     if not external:
         state_dir = root / "CITADEL_TAILSCALE"
         state_dir.mkdir(mode=0o700, exist_ok=True)
-        command = ["tailscaled", f"--state={state_dir}/tailscaled.state"]
+        command = ["tailscaled", f"--statedir={state_dir}"]
         if os.environ.get("TS_USERSPACE") == "1":
             command.append("--tun=userspace-networking")
         runtime.start(*command)
