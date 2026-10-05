@@ -40,6 +40,7 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         self.assertEqual(values["CITADEL_WEBUI_SOCKET"], "")
         self.assertEqual(values["CADDYFILE_START"], "")
         self.assertEqual(values["CADDYFILE_STEPS"], "1")
+        self.assertEqual(values["CADDYFILE_BACKEND"], "127.0.0.1")
         self.assertNotIn("CITADEL_TS_DISCOVERY", values)
 
     def test_current_environment_reaches_runtime_units(self) -> None:
@@ -53,6 +54,7 @@ class CitadelSystemdRuntimeTests(unittest.TestCase):
         }
         for name in ("citadel.service", "citadel-scan.service"):
             unit = (UNIT_DIR / name).read_text(encoding="utf-8")
+            self.assertIn("PassEnvironment=CADDYFILE_BACKEND", unit)
             pass_environment = next(
                 line for line in unit.splitlines() if line.startswith("PassEnvironment=")
             )

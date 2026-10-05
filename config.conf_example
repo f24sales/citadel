@@ -21,12 +21,17 @@ CITADEL_WEBUI_PORT=11000
 CITADEL_HIDE_HTTP_WEBUI_DUPE=1
 
 # Optional Caddyfile export. Empty/0 disables generation, not the WebUI.
-# CITADEL_DATA/caddy-config.json specifies Caddy's hosts and backend address.
 CADDYFILE_START=
 
 # Empty/blank uses step 1 and rebuilds all assignments on every scan.
 # An explicit positive number retains assigned frontend ports across scans.
 CADDYFILE_STEPS=1
+
+# Address of this instance as reachable FROM Caddy (hostname/IP, no scheme/port).
+# Same host: 127.0.0.1; host via Podman: host.containers.internal;
+# another container on Caddy's Podman network: that container's network name.
+#default-preset: 127.0.0.1
+CADDYFILE_BACKEND=127.0.0.1
 
 # full: reset/rebuild same-port HTTPS Serve routes for all discovered services.
 # http_to_https: keep verified direct HTTPS; use Serve only for HTTP backends.

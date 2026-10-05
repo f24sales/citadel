@@ -44,6 +44,13 @@ jobs:
           python -m pip install -r requirements.txt
           python -m unittest discover -s tests
 
+      - name: Verify generated HTTPS routes with Caddy
+        run: |
+          curl --fail --location --retry 3 https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz -o "$RUNNER_TEMP/caddy.tar.gz"
+          echo "b8bec15d14fb033562af9f207850027bcbaa1f891edc9efe00d38bf39e1bf9944f8b6b8eba041ddd4c171cd70c905174c704d705be2f23bc678fe1eaf37a2485  $RUNNER_TEMP/caddy.tar.gz" | sha512sum -c -
+          tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP" caddy
+          CADDY_TEST_BIN="$RUNNER_TEMP/caddy" python -m unittest discover -s tests -p test_caddy_https.py -v
+
       - name: Resolve immutable monthly version
         id: version
         env:

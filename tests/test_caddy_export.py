@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -38,31 +39,33 @@ class CaddyExportTests(unittest.TestCase):
         (self.root / "CITADEL_DATA").mkdir()
         self.provider = self.root / "extensions/enabled/caddy"
         self.provider.mkdir(parents=True)
-        self.config = {"backend": "ucore", "hosts": ["node.example.ts.net", "localhost"]}
-        self.write_config()
+        self.backend = "ucore"
+        status = patch.object(caddy, "tailscale_name", return_value="node.example.ts.net")
+        status.start()
+        self.addCleanup(status.stop)
         self.services([9090, 11000])
-
-    def write_config(self):
-        (self.root / "CITADEL_DATA/caddy-config.json").write_text(json.dumps(self.config))
 
     def services(self, ports):
         (self.root / "CITADEL_DATA/services.json").write_text(json.dumps({
             "http_services": [{"port": port, "scheme": "http"} for port in ports]}))
 
     def run_export(self, start="4000", steps="1"):
-        return caddy.export(self.root, self.provider, start, steps)
+        return caddy.export(self.root, self.provider, start, steps, backend_raw=self.backend)
 
     def mapping(self):
         return json.loads((self.root / "CITADEL_DATA/CADDY/ports.json").read_text())["ports"]
 
-    def test_missing_runtime_config_uses_shipped_example(self):
-        (self.root / "CITADEL_DATA/caddy-config.json").rename(self.provider / "config.json.example")
+    def test_no_config_json_is_needed_and_old_json_is_never_read(self):
+        (self.root / "CITADEL_DATA/caddy-config.json").write_text("broken old configuration")
+        (self.root / "cache").mkdir()
+        (self.root / "cache/caddy-config.json").write_text("broken ephemeral output")
         result = self.run_export()
         self.assertTrue(result["available"], result["errors"])
         self.assertIn("http://ucore:11000", (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text())
+        self.assertEqual(json.loads((self.root / "cache/caddy-config.json").read_text()),
+                         {"backend": "ucore", "tls_server_name": ""})
 
     def test_disabled_does_not_create_directory_or_require_valid_settings(self):
-        (self.root / "CITADEL_DATA/caddy-config.json").unlink()
         (self.root / "CITADEL_DATA/services.json").unlink()
         for start in ("", "0", "   ", "blank"):
             with self.subTest(start=start):
@@ -79,7 +82,9 @@ class CaddyExportTests(unittest.TestCase):
         self.assertEqual(result["kind"], "export")
         self.assertEqual(self.mapping(), {"9090": 4000, "11000": 4001})
         text = (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text()
-        self.assertIn("https://node.example.ts.net:4000, https://localhost:4000", text)
+        self.assertIn("https://:4000 {", text)
+        self.assertNotIn("https://localhost", text)
+        self.assertNotIn("https://node.example.ts.net", text)
         self.assertIn("reverse_proxy http://ucore:11000", text)
         self.assertNotIn("tls_insecure_skip_verify", text)
         self.assertNotIn("unix//", text)
@@ -118,7 +123,7 @@ class CaddyExportTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(self.mapping(), {"9090": 4000, "11000": 4001, "4096": 4002})
         text = (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text()
-        self.assertNotIn("ts.net:4000", text)
+        self.assertNotIn("https://:4000", text)
         self.services([4096, 9090, 11000])
         self.run_export()
         self.assertEqual(self.mapping()["9090"], 4000)
@@ -140,14 +145,45 @@ class CaddyExportTests(unittest.TestCase):
                 self.assertEqual(path.read_text(), before)
 
     def test_https_sni_can_differ_from_reachable_backend(self):
-        self.config.update(backend="host.containers.internal", tls_server_name="node.example.ts.net")
-        self.write_config()
+        self.backend = "host.containers.internal"
         (self.root / "CITADEL_DATA/services.json").write_text(json.dumps({"http_services": [
             {"port": 2000, "scheme": "https"}, {"port": 5800, "scheme": "http"}]}))
         self.assertEqual(self.run_export()["errors"], [])
         text = (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text()
         self.assertIn("reverse_proxy https://host.containers.internal:2000", text)
         self.assertEqual(text.count("tls_server_name node.example.ts.net"), 1)
+        self.assertEqual(text.count("header_up Host node.example.ts.net"), 1)
+        self.assertNotIn("insecure", text)
+
+    def test_ephemeral_file_can_be_regenerated_without_reexporting_own_ports(self):
+        self.run_export()
+        destination = self.root / "CITADEL_DATA/CADDY/Caddyfile"
+        before = destination.read_text()
+        destination.unlink()
+        (self.root / "cache/caddy-config.json").unlink()
+        self.services([4000, 4001, 9090, 11000])
+        result = self.run_export()
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["mappings_count"], 2)
+        self.assertEqual(destination.read_text(), before)
+
+    def test_current_backend_and_tailscale_name_replace_ephemeral_settings(self):
+        self.test_https_sni_can_differ_from_reachable_backend()
+        self.backend = "new-container"
+        with patch.object(caddy, "tailscale_name", return_value="new.example.ts.net"):
+            self.assertEqual(self.run_export()["errors"], [])
+        text = (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text()
+        self.assertIn("https://new-container:2000", text)
+        self.assertIn("tls_server_name new.example.ts.net", text)
+        self.assertNotIn("node.example.ts.net", text)
+
+    def test_missing_tailscale_never_disables_upstream_verification(self):
+        self.test_https_sni_can_differ_from_reachable_backend()
+        with patch.object(caddy, "tailscale_name", return_value=""):
+            self.assertEqual(self.run_export()["errors"], [])
+        text = (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text()
+        self.assertIn("https://host.containers.internal:2000", text)
+        self.assertNotIn("tls_server_name", text)
         self.assertNotIn("insecure", text)
 
     def test_unchanged_file_not_rewritten_and_independent_of_transport(self):
@@ -190,18 +226,14 @@ class CaddyExportTests(unittest.TestCase):
             self.assertTrue(result["errors"], (start, steps))
             self.assertFalse((self.root / "CITADEL_DATA/CADDY").exists())
 
-    def test_injection_in_config_is_rejected(self):
+    def test_injection_in_backend_is_rejected(self):
         for value in ("ucore\n}\n:80 {", "{$SECRET}", "https://ucore", "ucore:80", "ucore/path"):
-            for key in ("hosts", "backend"):
-                self.config = {"backend": "ucore", "hosts": ["localhost"]}
-                self.config[key] = [value] if key == "hosts" else value
-                self.write_config()
-                self.assertTrue(self.run_export()["errors"], (key, value))
-                self.assertFalse((self.root / "CITADEL_DATA/CADDY").exists())
+            self.backend = value
+            self.assertTrue(self.run_export()["errors"], value)
+            self.assertFalse((self.root / "CITADEL_DATA/CADDY").exists())
 
     def test_ipv6_host_and_backend(self):
-        self.config = {"backend": "::1", "hosts": ["[::1]"]}
-        self.write_config()
+        self.backend = "::1"
         self.assertEqual(self.run_export()["errors"], [])
         self.assertIn("reverse_proxy http://[::1]:9090", (self.root / "CITADEL_DATA/CADDY/Caddyfile").read_text())
 
@@ -224,6 +256,31 @@ class CaddyExportTests(unittest.TestCase):
             self.assertTrue(self.run_export()["errors"])
             self.assertEqual(path.read_bytes(), before)
             target.write_text(original)
+
+
+class TailscaleNameTests(unittest.TestCase):
+    def test_read_only_status_returns_current_logged_in_name(self):
+        status = {"BackendState": "Running", "Self": {"DNSName": "node.example.ts.net."}}
+        with patch.object(caddy.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps(status))) as run:
+            self.assertEqual(caddy.tailscale_name(), "node.example.ts.net")
+            run.assert_called_once_with(["tailscale", "status", "--json"], check=True,
+                                        capture_output=True, text=True, timeout=3)
+
+    def test_no_login_or_malformed_status_does_not_reuse_stale_names(self):
+        for status in ("invalid", "[]", "null", json.dumps({"BackendState": "NeedsLogin",
+                       "Self": {"DNSName": "old.example.ts.net"}}),
+                       json.dumps({"BackendState": "Running", "Self": []}),
+                       json.dumps({"BackendState": "Running", "Self": {"DNSName": "bad\n{"}})):
+            with self.subTest(status=status), patch.object(caddy.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], 0, status)):
+                self.assertEqual(caddy.tailscale_name(), "")
+
+    def test_missing_cli_timeout_and_failed_daemon_are_optional(self):
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("tailscale", 3),
+                      subprocess.CalledProcessError(1, "tailscale")):
+            with patch.object(caddy.subprocess, "run", side_effect=error):
+                self.assertEqual(caddy.tailscale_name(), "")
 
 
 if __name__ == "__main__":

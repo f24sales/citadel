@@ -279,6 +279,7 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_HIDE_HTTP_WEBUI_DUPE` | `1` | Hide this WebUI's HTTP tile only while the same instance also responds successfully over HTTPS |
 | `CADDYFILE_START` | empty | First generated HTTPS frontend port; empty/0 disables export |
 | `CADDYFILE_STEPS` | `1` | Explicit positive increment retains assignments; empty/blank uses 1 and rebuilds assignments each scan |
+| `CADDYFILE_BACKEND` | `127.0.0.1` | Address of this instance as reachable from Caddy; hostname/IP, without scheme or port |
 | `CITADEL_TOKEN` | generated | Optional token protecting Cloudflare edits in the dashboard |
 | `CITADEL_SUBNET_IP` | empty | Address used only for subnet routes; Cloudflare always targets localhost |
 | `CITADEL_HTTPS_ONLY` | `0` | When enabled, route only services that already speak HTTPS on localhost; HTTP services remain visible |
@@ -377,6 +378,7 @@ separately from URL providers' `routes.json`.
 ```dotenv
 CADDYFILE_START=4000
 CADDYFILE_STEPS=1
+CADDYFILE_BACKEND=ucore
 ```
 
 An unset, empty, or zero start disables generation; no output directory is
@@ -385,19 +387,24 @@ writes `CITADEL_DATA/CADDY/Caddyfile`, independently of the WebUI's `tcp`/`unix`
 transport. It never starts/reloads Caddy, changes Quadlets, opens ports, calls
 Podman, or issues certificates. No running Caddy is required for generation.
 
-Configure the addresses visible **from Caddy** in
-`CITADEL_DATA/caddy-config.json`, for example:
+These three settings use the normal config/injection loader. No persistent
+Caddy configuration JSON or frontend-host list is read. The default backend
+`127.0.0.1` is for a same-host deployment. Use `host.containers.internal` when
+Caddy runs in Podman and proxies host services, or the source container's
+network name when both containers share a Podman network. This is explicit;
+Citadel does not guess where the consuming Caddy runs.
 
-```json
-{
-  "backend": "ucore",
-  "hosts": ["ucore.tailbab54f.ts.net"]
-}
-```
+Each generated `https://:PORT` block accepts every HTTP Host header, including
+loopback, Tailscale and Cloudflare. Thus the ordinary scanner can fetch HTML
+and icons through loopback without DNS overrides or logo copies. HTTPS remains
+required; clients still need a certificate-valid hostname. The consuming
+Caddy supplies its existing certificates/Tailscale integration.
+For HTTPS upstreams, Citadel reads its own logged-in Tailscale DNS name as the
+TLS server name and HTTP Host header. Without a logged-in daemon it uses the backend's normal TLS
+name; certificate verification is never disabled. Resolved export settings
+are written afresh to ephemeral `cache/caddy-config.json` for diagnostics,
+never read back as configuration. No old JSON is needed to regenerate a file.
 
-The default `127.0.0.1` backend and `localhost` frontend are for a same-host
-deployment. A Caddy in a separate container needs a backend name reachable
-from its Podman network; its own localhost is not the source container.
 Use the **Caddy host's** real Tailscale DNS name for original Tailscale
 certificates, not a different container's Tailscale name. For `.ts.net`, Caddy
 obtains the official certificate from that node's Tailscale daemon at the TLS
