@@ -128,7 +128,7 @@ def unroute(project_dir: Path, requested_ports: list[int] | None = None) -> int:
     except ValueError as exc:
         raise UnrouteError(str(exc)) from exc
     if not enabled:
-        print("[unroute] CITADEL_TAILSCALE_SERVE=0; Serve and metadata left unchanged")
+        print("[unroute] CITADEL_TAILSCALE_SERVE=off; Serve and metadata left unchanged")
         return 0
     runtime = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("TMPDIR") or "/tmp"
     path = Path(os.environ.get("CITADEL_SCAN_LOCK_FILE") or f"{runtime}/citadel-scan-{os.getuid()}.lock")

@@ -43,7 +43,7 @@ class PersistenceExampleTests(unittest.TestCase):
             return result.stdout.splitlines()
 
     def test_runtime_flags_never_generate_mounts_or_links(self):
-        for serve in ("0", "1"):
+        for serve in ("off", "http_to_https", "full"):
             for logos in ("0", "1"):
                 for command in ("mounts", "entries"):
                     with self.subTest(serve=serve, logos=logos, command=command):

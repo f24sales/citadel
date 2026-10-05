@@ -276,7 +276,7 @@ renders provider buttons, and can run the configured scanner.
 | `CITADEL_TOKEN` | generated | Optional token protecting Cloudflare edits in the dashboard |
 | `CITADEL_SUBNET_IP` | empty | Address used only for subnet routes; Cloudflare always targets localhost |
 | `CITADEL_HTTPS_ONLY` | `0` | When enabled, route only services that already speak HTTPS on localhost; HTTP services remain visible |
-| `CITADEL_TAILSCALE_SERVE` | `1` | Reset/rebuild Serve each scan; 0 leaves Serve untouched and verifies direct HTTPS links |
+| `CITADEL_TAILSCALE_SERVE` | `full` | `off`: direct HTTPS only; `http_to_https`: proxy HTTP only; `full`: proxy all ports |
 | `CITADEL_LOGO_PERSISTENT` | `1` | Retain logos independently; service metadata is always rescanned |
 | `CITADEL_USER_AGENT` | `Mozilla/5.0 (compatible; CITADEL/1.0)` | HTTP probe user agent |
 | `CITADEL_CLOUDFLARE_DOMAIN` | empty | DNS suffix used for generated hostnames |
@@ -451,7 +451,7 @@ into the export).
 bind-mounted init directory, alongside these instance-specific inputs:
 
 - `instance.conf`: service environment, including `CADDYFILE_START=4000`,
-  `CADDYFILE_STEPS=1`, `CITADEL_TAILSCALE_SERVE=1`, and `CITADEL_LOGO_PERSISTENT=1`.
+  `CADDYFILE_STEPS=1`, `CITADEL_TAILSCALE_SERVE=full`, and `CITADEL_LOGO_PERSISTENT=1`.
 - `export-config.json`: the consuming Caddy's hostnames and the source
   container's reachable Podman-network name as `backend`.
 - `service.conf`: a systemd drop-in with `After=fedora45-ai-init-hooks.service`
@@ -486,15 +486,29 @@ noninteractive start attempt when necessary, then checks again. Missing CLI,
 login requirements or failed startup produce an error instead of retry loops
 or fabricated URLs.
 
-With `CITADEL_TAILSCALE_SERVE=1` (default), after validating discovery and the running
-node, every Tailscale scan runs
+The existing `config.sh` choice menu writes one of `off`, `http_to_https` or
+`full` into the configuration, not a menu number. Empty uses `full`; old numeric
+and boolean mode values are rejected before any provider commands run.
+
+With `CITADEL_TAILSCALE_SERVE=full` (default), after validating discovery and the running
+node, every full Tailscale scan runs
 `tailscale serve reset` and rebuilds the currently discovered ports 1:1 using
 **HTTPS only**. This deliberately replaces manual/foreign Serve routes too,
 including their HTTP handlers and Funnel configuration. Existing connections
 may be interrupted during a rebuild. Do not share this node's Serve configuration
 with another route manager.
 
-With `CITADEL_TAILSCALE_SERVE=0`, no Serve commands or configuration writes run,
+With `CITADEL_TAILSCALE_SERVE=http_to_https`, full scans also reset Serve first,
+then verify direct HTTPS on the node's Tailscale address. Valid direct HTTPS
+is kept without a proxy; HTTP-only backends receive same-port HTTPS Serve.
+An already-discovered HTTPS backend with a failed certificate/connectivity check
+is reported as skipped, never silently wrapped or downgraded to HTTP. `--add`
+never resets, replaces or removes existing listeners. Existing Serve listeners
+are not mistaken for native HTTPS during Add retries. This does not disable
+the backend's original HTTP listener. Caddy HTTPS ports therefore need no Serve
+listener, while HTTP ports still have the documented wildcard-binding risk.
+
+With `CITADEL_TAILSCALE_SERVE=off`, no Serve commands or configuration writes run,
 including via `unroute.sh`. HTTPS endpoints are probed directly on the node's
 Tailscale IP with hostname/certificate verification, then published as direct
 links. HTTP-only backends are not advertised as HTTPS. Existing Serve routes
@@ -510,7 +524,7 @@ does not run it. The shared helper and unit drop-in are hardlinked from
 Alpine image invokes the same helper after Tailscale is ready and before WebUI
 startup. Restarting that entire container repeats its bootstrap.
 
-With Serve enabled, both HTTP on `127.0.0.1:4096` and HTTPS on `127.0.0.1:2000` receive HTTPS on
+In `full` mode, both HTTP on `127.0.0.1:4096` and HTTPS on `127.0.0.1:2000` receive HTTPS on
 `<node>.ts.net:4096` and `<node>.ts.net:2000`, respectively. There is no public
 HTTP fallback, second port range, ownership ledger, or service identity matching.
 An internal HTTP backend is still allowed. HTTPS backends remain encrypted on
@@ -572,7 +586,7 @@ Release selected Serve ports with:
 With no port arguments, `unroute.sh` uses `CITADEL_WEBUI_PORT`. It never runs a
 global Tailscale Serve reset.
 
-With `CITADEL_TAILSCALE_SERVE=0`, `unroute.sh` is a no-op: neither the daemon's
+With `CITADEL_TAILSCALE_SERVE=off`, `unroute.sh` is a no-op: neither the daemon's
 Serve configuration nor cached direct links are touched.
 
 ### Cloudflare

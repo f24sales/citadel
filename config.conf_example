@@ -28,12 +28,13 @@ CADDYFILE_START=
 # An explicit positive number retains assigned frontend ports across scans.
 CADDYFILE_STEPS=1
 
-# 1 resets and rebuilds same-port HTTPS Serve routes on every scan.
-# 0 never manages Serve; advertise only verified direct HTTPS endpoints.
+# full: reset/rebuild same-port HTTPS Serve routes for all discovered services.
+# http_to_https: keep verified direct HTTPS; use Serve only for HTTP backends.
+# off: never manage Serve; advertise only verified direct HTTPS endpoints.
 # Volumes/mounts are configured separately at the container level.
-#choices: 0 1
-#default-preset: 1
-CITADEL_TAILSCALE_SERVE=1
+#choices: off http_to_https full
+#default-preset: full
+CITADEL_TAILSCALE_SERVE=full
 
 # Bootstrap only: clear all Serve/Funnel routes after Tailscale up, before WebUI.
 # Independent of the Citadel scan; only literal 1 enables the reset.

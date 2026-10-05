@@ -95,7 +95,9 @@ class TailscaleProviderTests(unittest.TestCase):
                 self.assertIn("--resolve", args)
                 self.assertIn("--noproxy", args)
                 output = "401"
-                error = "TLS certificate verification failed" if direct_fail else ""
+                port = int(args[-1].rsplit(":", 1)[-1])
+                failed = direct_fail is True or isinstance(direct_fail, set) and port in direct_fail
+                error = "TLS certificate verification failed" if failed else ""
             elif args == ["tailscale", "status", "--json"]:
                 response = pending.pop(0) if len(pending) > 1 else pending[0]
                 if response is None:
@@ -175,6 +177,84 @@ class TailscaleProviderTests(unittest.TestCase):
         self.run_provider(live=live_route(11000))
         self.assertEqual(len(self.mutations()), 2)
 
+    def test_http_to_https_resets_then_only_proxies_http_backends(self):
+        self.discover([service(3005, "https", "*"), service(5800)])
+        payload = self.run_provider(serve="http_to_https", live=live_route(3005), direct_fail={5800})
+        self.assertEqual(payload["serve_mode"], "http_to_https")
+        self.assertEqual(payload["services"]["3005"]["mode"], "direct")
+        self.assertFalse(payload["services"]["3005"]["owns_listener"])
+        self.assertEqual(payload["services"]["5800"]["mode"], "proxy")
+        self.assertEqual(payload["services"]["5800"]["target"], "http://127.0.0.1:5800")
+        self.assertEqual(self.mutations(), [
+            ["tailscale", "serve", "reset"],
+            ["tailscale", "serve", "--bg", "--yes", "--https=5800", "http://127.0.0.1:5800"],
+        ])
+        reset = self.commands.index(["tailscale", "serve", "reset"])
+        self.assertTrue(all(index > reset for index, cmd in enumerate(self.commands) if cmd[0] == "curl"))
+
+    def test_http_to_https_uses_existing_https_even_with_http_on_loopback(self):
+        self.discover([service(5800)])
+        payload = self.run_provider(serve="http_to_https")
+        self.assertEqual(payload["services"]["5800"]["mode"], "direct")
+        self.assertEqual(self.mutations(), [["tailscale", "serve", "reset"]])
+
+    def test_http_to_https_never_wraps_broken_https(self):
+        self.discover([service(3005, "https")])
+        payload = self.run_provider(serve="http_to_https", direct_fail=True)
+        self.assertEqual(payload["services"], {})
+        self.assertIn("TLS certificate", payload["skipped"]["3005"])
+        self.assertEqual(self.mutations(), [["tailscale", "serve", "reset"]])
+
+    def test_http_to_https_direct_only_does_not_need_serve_certificates(self):
+        self.discover([service(3005, "https")])
+        info = status()
+        info["CertDomains"] = []
+        payload = self.run_provider(serve="http_to_https", statuses=[info])
+        self.assertEqual(payload["services"]["3005"]["mode"], "direct")
+
+    def test_http_to_https_certificate_preflight_preserves_routes_on_failure(self):
+        info = status()
+        info["CertDomains"] = []
+        initial = live_route(5800)
+        self.run_provider(serve="http_to_https", statuses=[info], live=initial, expect_rc=1)
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.live, initial)
+
+    def test_http_to_https_empty_scan_clears_old_routes(self):
+        self.discover([])
+        self.run_provider(serve="http_to_https", live=live_route())
+        self.assertEqual(self.live, {})
+        self.assertEqual(self.mutations(), [["tailscale", "serve", "reset"]])
+
+    def test_http_to_https_add_keeps_existing_routes_and_only_adds_http(self):
+        old = {"url": f"https://{DOMAIN}:5800", "owns_listener": True}
+        self.routes.write_text(json.dumps({"services": {"5800": old}}))
+        self.services.write_text(json.dumps({"http_services": [service(5800), service(11000), service(3005, "https")],
+                                             "added_ports": [11000, 3005]}))
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            payload = self.run_provider(serve="http_to_https", live=live_route(5800), direct_fail={11000})
+        self.assertEqual(payload["services"]["5800"], old)
+        self.assertEqual(payload["services"]["3005"]["mode"], "direct")
+        self.assertEqual(set(self.live["TCP"]), {"5800", "11000"})
+        self.assertEqual(self.mutations(), [
+            ["tailscale", "serve", "--bg", "--yes", "--https=11000", "http://127.0.0.1:11000"],
+        ])
+
+    def test_http_to_https_add_recovers_confirmed_serve_as_proxy_not_direct(self):
+        self.services.write_text(json.dumps({"http_services": [service(11000)], "added_ports": [11000]}))
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            payload = self.run_provider(serve="http_to_https", live=live_route(11000))
+        self.assertEqual(payload["services"]["11000"]["mode"], "proxy")
+        self.assertFalse(any(cmd[0] == "curl" for cmd in self.commands))
+        self.assertEqual(self.mutations(), [])
+
+    def test_http_to_https_add_never_overwrites_conflicting_serve(self):
+        self.services.write_text(json.dumps({"http_services": [service(11000)], "added_ports": [11000]}))
+        with patch.dict(os.environ, {"CITADEL_SCAN_ADD": "1"}):
+            payload = self.run_provider(serve="http_to_https", live=live_route(11000, target="http://127.0.0.1:42"), expect_rc=1)
+        self.assertEqual(payload["services"], {})
+        self.assertEqual(self.mutations(), [])
+
     def test_reset_clears_paths_tcp_foreground_and_funnel(self):
         live = live_route()
         live["TCP"]["22"] = {"TCPForward": "127.0.0.1:22"}
@@ -222,7 +302,7 @@ class TailscaleProviderTests(unittest.TestCase):
     def test_serve_off_only_publishes_verified_direct_https_without_touching_serve(self):
         self.discover([service(3005, "https", "*"), service(5800)])
         initial = live_route(11000)
-        payload = self.run_provider(serve=0, live=initial)
+        payload = self.run_provider(serve="off", live=initial)
         self.assertFalse(payload["serve_enabled"])
         self.assertEqual(payload["services"], {"3005": {
             "mode": "direct", "url": f"https://{DOMAIN}:3005", "target": None, "owns_listener": False}})
@@ -236,7 +316,7 @@ class TailscaleProviderTests(unittest.TestCase):
         row = service(3005, "https")
         row["urls"]["tailscale"] = "https://old.example:3005"
         self.discover([row])
-        payload = self.run_provider(serve=0, direct_fail=True)
+        payload = self.run_provider(serve="off", direct_fail=True)
         self.assertEqual(payload["services"], {})
         self.assertIn("TLS certificate", payload["skipped"]["3005"])
         self.assertEqual(payload["errors"], [])
@@ -246,7 +326,7 @@ class TailscaleProviderTests(unittest.TestCase):
     def test_serve_off_with_empty_scan_never_reads_or_changes_serve(self):
         self.discover([])
         initial = live_route()
-        self.run_provider(serve=0, live=initial)
+        self.run_provider(serve="off", live=initial)
         self.assertEqual(self.commands, [["tailscale", "status", "--json"]])
         self.assertEqual(self.live, initial)
 
@@ -254,13 +334,13 @@ class TailscaleProviderTests(unittest.TestCase):
         self.discover([service(3005, "https")])
         info = status()
         info["CertDomains"] = []
-        self.assertTrue(self.run_provider(serve=0, statuses=[info])["available"])
+        self.assertTrue(self.run_provider(serve="off", statuses=[info])["available"])
 
     def test_direct_https_ipv6_is_pinned_to_the_node_address(self):
         self.discover([service(3005, "https")])
         info = status()
         info["Self"]["TailscaleIPs"] = ["fd7a:115c:a1e0::1"]
-        self.run_provider(serve=0, statuses=[info])
+        self.run_provider(serve="off", statuses=[info])
         curl = next(cmd for cmd in self.commands if cmd[0] == "curl")
         self.assertIn(f"{DOMAIN}:3005:[fd7a:115c:a1e0::1]", curl)
 
@@ -268,7 +348,7 @@ class TailscaleProviderTests(unittest.TestCase):
         self.discover([service(3005, "https")])
         info = status()
         info["Self"]["TailscaleIPs"] = []
-        payload = self.run_provider(serve=0, statuses=[info])
+        payload = self.run_provider(serve="off", statuses=[info])
         self.assertEqual(payload["services"], {})
         self.assertIn("no Tailscale IP", payload["skipped"]["3005"])
         self.assertEqual(self.commands, [["tailscale", "status", "--json"]])
@@ -302,8 +382,10 @@ class TailscaleProviderTests(unittest.TestCase):
                 self.assertEqual(self.commands, [])
 
     def test_invalid_serve_flag_prevents_all_commands(self):
-        self.run_provider(serve="maybe", expect_rc=1)
-        self.assertEqual(self.commands, [])
+        for value in ("maybe", "0", "1", "2", "true", "false"):
+            with self.subTest(value=value):
+                self.run_provider(serve=value, expect_rc=1)
+                self.assertEqual(self.commands, [])
 
     def test_blank_serve_flag_defaults_to_reset_mode(self):
         for value in ("", "   ", "blank"):

@@ -143,12 +143,16 @@ def citadel_value(provider_dir: str, key: str, default: str = "") -> str:
     return str(importlib.import_module("python_header").get(key, default)).strip()
 
 
+def serve_mode(provider_dir: str) -> str:
+    raw = citadel_value(provider_dir, "CITADEL_TAILSCALE_SERVE", "full").strip().lower()
+    raw = "full" if raw in ("", "blank") else raw
+    if raw not in ("off", "http_to_https", "full"):
+        raise ValueError("CITADEL_TAILSCALE_SERVE must be off, http_to_https or full")
+    return raw
+
+
 def serve_management_enabled(provider_dir: str) -> bool:
-    raw = citadel_value(provider_dir, "CITADEL_TAILSCALE_SERVE", "1").strip().lower()
-    raw = "1" if raw in ("", "blank") else raw
-    if raw not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
-        raise ValueError("CITADEL_TAILSCALE_SERVE must be a boolean")
-    return parse_bool(raw)
+    return serve_mode(provider_dir) != "off"
 
 
 def direct_https(domain: str, port: int, info: dict[str, Any]) -> str:
@@ -196,7 +200,7 @@ def validate_services(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(int(service["port"])): service for service in routable_services(payload)}
 
 
-def publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, manage_serve, skipped):
+def publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, mode, skipped):
     for service in services_payload.get("http_services", []):
         if adding() and service.get("port") not in services_payload.get("added_ports", []):
             continue
@@ -223,7 +227,8 @@ def publish(args, ext, services_payload, services, routes, errors, enabled, runn
         "provider_id": "tailscale", "label": str(ext.get("label") or "Tailscale"),
         "considered": enabled, "enabled": enabled, "available": bool(routes),
         "generated_at": now_iso(), "default_candidate": True, "running": running,
-        "domain": domain, "serve_enabled": manage_serve, "route_schema": ROUTE_SCHEMA_VERSION,
+        "domain": domain, "serve_enabled": mode != "off", "serve_mode": mode,
+        "route_schema": ROUTE_SCHEMA_VERSION,
         "services": routes, "errors": errors, "skipped": skipped,
     }
     write_routes(args.routes_out, payload)
@@ -239,7 +244,8 @@ def main() -> int:
         provider_dir = Path(args.provider_dir).absolute()
         ext = json_object((provider_dir / "extension.json").read_text(encoding="utf-8"))
         enabled = provider_dir.parent.name == "enabled" and parse_bool(ext.get("enabled", True))
-        manage_serve = serve_management_enabled(args.provider_dir)
+        mode = serve_mode(args.provider_dir)
+        manage_serve = mode != "off"
         services_payload = json_object(Path(args.services_file).read_text(encoding="utf-8"))
         services = validate_services(services_payload)
     except (OSError, ValueError, TypeError) as exc:
@@ -258,8 +264,10 @@ def main() -> int:
             domain = (info.get("Self", {}).get("DNSName") or next(iter(cert_domains), "")).rstrip(".")
             if not domain:
                 raise ValueError("Tailscale has no node DNS name")
-            if manage_serve and domain not in cert_domains:
+            needs_certificate = mode == "full" or any(row["scheme"] == "http" for row in services.values())
+            if manage_serve and needs_certificate and domain not in cert_domains:
                 raise ValueError("Tailscale has no certificate domain; enable HTTPS certificates manually")
+            live = {}
             if manage_serve:
                 if not adding():
                     command(["tailscale", "serve", "reset"])
@@ -270,15 +278,21 @@ def main() -> int:
                 port = int(key)
                 target = serve_target(port, service["scheme"])
                 try:
-                    if not manage_serve:
-                        if service["scheme"] == "https":
-                            try:
-                                routes[key] = route_record("direct", direct_https(domain, port, info))
-                            except ValueError as exc:
-                                skipped[key] = str(exc)
-                        else:
-                            skipped[key] = "HTTP backend needs an HTTPS frontend; Serve is disabled"
+                    if mode == "off" and service["scheme"] == "http":
+                        skipped[key] = "HTTP backend needs an HTTPS frontend; Serve is disabled"
                         continue
+                    # Full scans reset before probing. Add must not mistake an
+                    # existing Serve listener for native HTTPS or overwrite it.
+                    if mode != "full" and not (manage_serve and key in node_ports(live)):
+                        try:
+                            url = direct_https(domain, port, info)
+                        except ValueError as exc:
+                            if mode == "off" or service["scheme"] == "https":
+                                skipped[key] = str(exc)
+                                continue
+                        else:
+                            routes[key] = route_record("direct", url)
+                            continue
                     if not https_route_matches(live, domain, port, target):
                         if adding() and str(port) in (live.get("TCP") or {}):
                             raise ValueError("Existing Serve listener differs; Add never overwrites it")
@@ -295,7 +309,7 @@ def main() -> int:
                     errors.append(f"port {port}: {exc}")
         except (ValueError, TypeError, AttributeError) as exc:
             errors.append(str(exc))
-    publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, manage_serve, skipped)
+    publish(args, ext, services_payload, services, routes, errors, enabled, running, domain, mode, skipped)
     for port, reason in skipped.items():
         print(f"skip direct Tailscale port {port}: {reason}")
     for error in errors:

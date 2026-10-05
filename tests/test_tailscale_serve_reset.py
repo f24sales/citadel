@@ -51,10 +51,10 @@ class TailscaleServeResetTests(unittest.TestCase):
         self.assertEqual(self.log.read_text(), "serve\nreset\n")
 
     def test_independent_of_citadel_scan_setting(self):
-        self.assertEqual(self.run_reset("1", CITADEL_TAILSCALE_SERVE="0").returncode, 0)
+        self.assertEqual(self.run_reset("1", CITADEL_TAILSCALE_SERVE="off").returncode, 0)
         self.assertEqual(self.log.read_text(), "serve\nreset\n")
         self.log.unlink()
-        self.assertEqual(self.run_reset("0", CITADEL_TAILSCALE_SERVE="1").returncode, 0)
+        self.assertEqual(self.run_reset("0", CITADEL_TAILSCALE_SERVE="full").returncode, 0)
         self.assertFalse(self.log.exists())
 
     def test_disabled_does_not_need_a_tailscale_installation(self):
