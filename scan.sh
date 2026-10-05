@@ -7,18 +7,26 @@ umask 022
 usage() {
     cat >&2 <<'EOF'
 Usage: ./scan.sh [--add] [--provider PROVIDER_ID]
+       ./scan.sh --del PORT
 
 Without --provider, scan listeners and reconcile every enabled provider.
 With --provider, scan listeners and reconcile only that provider.
 With --add, probe only unknown ports and append routes without resetting any.
+With --del PORT, delete only that port's Tailscale Serve route; do not scan.
 EOF
 }
 
 PROVIDER_FILTER=""
+DELETE_PORT=""
 export CITADEL_SCAN_ADD=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --add) export CITADEL_SCAN_ADD=1; shift ;;
+        --del)
+            [[ $# -ge 2 && -z "$DELETE_PORT" && "$2" =~ ^[0-9]{1,5}$ ]] || { usage; exit 2; }
+            DELETE_PORT="$2"
+            shift 2
+            ;;
         --provider)
             [[ $# -ge 2 && -n "$2" ]] || {
                 usage
@@ -43,6 +51,10 @@ done
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "$DELETE_PORT" ]]; then
+    [[ "$CITADEL_SCAN_ADD" == 0 && -z "$PROVIDER_FILTER" ]] || { usage; exit 2; }
+    exec python3 "$SCRIPT_DIR/functions/reset_serve.py" --del "$DELETE_PORT"
+fi
 CACHE_DIR="$SCRIPT_DIR/cache"
 DATA_DIR="$SCRIPT_DIR/CITADEL_DATA"
 ICONS_DIR="$DATA_DIR/icons"

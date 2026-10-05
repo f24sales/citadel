@@ -508,6 +508,24 @@ async function runScan(ctx, add = false) {
   return activeScan.promise;
 }
 
+async function tailscaleEditReply(api, message) {
+  const { ports } = await runCoreProcess(api, "serve-status");
+  return {
+    text: ["Tailscale — Edit", message,
+      ports.length ? "Live Serve routes: delete one port or reset all. No scan is started." : "No Serve routes on this node.",
+      "Direct HTTPS services are not Serve routes and are not listed."].filter(Boolean).join("\n"),
+    presentation: { tone: "neutral", blocks: [
+      ...ports.map(port => ({ type: "buttons", buttons: [
+        commandButton(`Delete :${port}`, `/citadel tailscale del ${port}`, "danger"),
+      ] })),
+      { type: "buttons", buttons: [
+        commandButton("Reset Serve Routes", "/citadel tailscale reset", "danger"),
+        commandButton("Back", "/citadel tailscale", "secondary"),
+      ] },
+    ] },
+  };
+}
+
 async function handleCommand(ctx, api) {
   const raw = readString(ctx.args) ?? "localhost";
   const parts = raw.split(/\s+/);
@@ -529,14 +547,15 @@ async function handleCommand(ctx, api) {
     await runCoreProcess(api, "reset-serve");
     return { text: "Tailscale Serve routes reset. Start the service, then run Scan. Tailscale SSH is unchanged." };
   }
-  const data = await readDashboard(api);
-  if (action === "tailscale" && parts[1] === "edit") {
-    return { text: "Tailscale — Edit. Reset removes all Serve routes on this node; it does not start a scan.",
-      presentation: { tone: "neutral", blocks: [{ type: "buttons", buttons: [
-        commandButton("Reset Serve Routes", "/citadel tailscale reset", "danger"),
-        commandButton("Back", "/citadel tailscale", "secondary"),
-      ] }] } };
+  if (action === "tailscale" && parts[1] === "del") {
+    if (parts.length !== 3 || !/^[0-9]{1,5}$/.test(parts[2]) || Number(parts[2]) < 1 || Number(parts[2]) > 65535)
+      throw new Error("Usage: /citadel tailscale del PORT (1–65535)");
+    if (activeScan) throw new Error("Scan/Add is running; Serve deletion was not started.");
+    const result = await runCoreProcess(api, "delete-serve", [parts[2]]);
+    return tailscaleEditReply(api, `Serve route :${result.port} removed. Other ports and SSH are unchanged.`);
   }
+  if (action === "tailscale" && parts[1] === "edit") return tailscaleEditReply(api);
+  const data = await readDashboard(api);
   if (action === "cloudflare") {
     return handleCloudflareCommand(parts.slice(1), data, api);
   }

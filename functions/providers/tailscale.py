@@ -63,6 +63,8 @@ def without_ports(config: dict[str, Any], ports: set[str]) -> dict[str, Any]:
             if authority.rsplit(":", 1)[-1] in ports:
                 result[field].pop(authority)
     for session, foreground in list(result.get("Foreground", {}).items()):
+        if not node_ports(foreground) & ports:
+            continue
         remaining = without_ports(foreground, ports)
         if node_ports(remaining) or remaining.get("Services"):
             result["Foreground"][session] = remaining

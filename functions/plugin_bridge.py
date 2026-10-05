@@ -25,6 +25,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="operation", required=True)
     subparsers.add_parser("dashboard")
     subparsers.add_parser("reset-serve")
+    subparsers.add_parser("serve-status")
+    subparsers.add_parser("delete-serve").add_argument("port")
     save_parser = subparsers.add_parser("save-cloudflare-rule")
     save_parser.add_argument("port", type=int)
     args = parser.parse_args()
@@ -33,6 +35,12 @@ def main() -> int:
     if args.operation == "reset-serve":
         from reset_serve import reset
         payload = reset()
+    elif args.operation == "serve-status":
+        from reset_serve import status
+        payload = status()
+    elif args.operation == "delete-serve":
+        from reset_serve import delete
+        payload = delete(args.port)
     elif args.operation == "dashboard":
         payload = core.build_dashboard()
     else:

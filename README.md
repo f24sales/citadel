@@ -29,9 +29,15 @@ provider is disabled or unavailable.
 - `./scan.sh --add` probes only unknown ports, appending routes without resetting
   Serve, removing Cloudflare bindings, renumbering Caddy mappings or touching old logos.
   Failed additions remain pending and are retried on the next Add.
-- Telegram offers **Add** next to **Scan**, and **Tailscale → EDIT → Reset Serve Routes**.
+- `./scan.sh --del PORT` deletes only that port's live Tailscale Serve route,
+  without scanning or changing Citadel metadata, logos, Caddy, Cloudflare or SSH.
+  Explicit deletion also works when automatic Serve management is `off`.
+- Telegram offers **Add** next to **Scan**, and **Tailscale → EDIT** lists live
+  Serve ports with individual Delete buttons, alongside **Reset Serve Routes**.
+  Direct HTTPS services without Serve are not listed. `/citadel tailscale del PORT`
+  uses the same deletion function as the CLI.
   `/citadel tailscale reset` explicitly clears Serve only (not SSH), without scanning.
-  Scans and resets share a lock; `/citadel add` is the fast append-only command.
+  Scans, deletes and resets share a lock; `/citadel add` is the fast append-only command.
 
 ## Supported deployment modes
 
