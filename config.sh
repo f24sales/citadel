@@ -1146,10 +1146,19 @@ add_sqlite_volume_mounts() {
 }
 
 add_optional_persistence_mounts() {
-    local item source key path
+    local item source key path destination existing mounted explicit
     [ -x "$OPTIONAL_PERSISTENCE" ] || return 0
     while IFS= read -r item || [ -n "$item" ]; do
         [ -n "$item" ] || continue
+        # An explicit mount selects an existing state volume; do not shadow it
+        # with the automatically named default at the same destination.
+        destination="${item#*:}"; destination="${destination%%:*}"
+        explicit=false
+        for existing in "${volumes[@]}"; do
+            mounted="${existing#*:}"; mounted="${mounted%%:*}"
+            if [[ "$mounted" == "$destination" ]]; then explicit=true; break; fi
+        done
+        $explicit && continue
         source="${item%%:*}"
         add_unique "$item" volumes
         add_unique "$source" named_volumes
