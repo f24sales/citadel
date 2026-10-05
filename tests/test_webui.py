@@ -28,6 +28,18 @@ class WebUiScanBoundaryTests(unittest.TestCase):
         self.assertNotIn("<script>", rendered)
         self.assertIn("&lt;script&gt;", rendered)
 
+    def test_mobile_tiles_use_one_shrinkable_column(self):
+        stylesheet = Path(webui.__file__).resolve().parent / "assets" / "style.css"
+        mobile = stylesheet.read_text().split("@media (max-width: 760px)", 1)[1]
+        self.assertRegex(mobile, r"\.grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)")
+        self.assertRegex(mobile, r"\.tile\.cloudflare-editing\s*\{[^}]*grid-column:\s*auto")
+
+    def test_mobile_header_matches_content_gutters(self):
+        stylesheet = Path(webui.__file__).resolve().parent / "assets" / "style.css"
+        mobile = stylesheet.read_text().split("@media (max-width: 760px)", 1)[1]
+        self.assertRegex(mobile, r"\.site-header\s*\{[^}]*padding:\s*16px 14px")
+        self.assertRegex(mobile, r"\.layout\s*\{[^}]*padding:\s*14px")
+
 
 class EditTokenGuardTests(unittest.TestCase):
     def setUp(self):
